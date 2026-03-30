@@ -1,0 +1,142 @@
+[
+  {
+    "topic_id": "ai_daily_001",
+    "scene": "News discussion",
+    "title": "AI assistants in daily work",
+    "intro": "Some people use AI tools every day to save time, while others worry this can reduce independent thinking.",
+    "prompt": "What about you: do AI tools usually make your work easier, or more confusing?"
+  },
+  {
+    "topic_id": "ai_daily_002",
+    "scene": "Work",
+    "title": "Using AI for writing",
+    "intro": "Many people use AI to draft emails and documents, but some worry the tone becomes generic.",
+    "prompt": "When you write with AI, what part feels most useful and what part still needs your own touch?"
+  },
+  {
+    "topic_id": "ai_daily_003",
+    "scene": "Opinions",
+    "title": "Trust in AI answers",
+    "intro": "AI can answer quickly, but quick answers are not always correct.",
+    "prompt": "How do you decide when to trust an AI answer and when to double-check?"
+  },
+  {
+    "topic_id": "ai_daily_004",
+    "scene": "Daily life",
+    "title": "Learning with AI",
+    "intro": "Some learners feel AI gives confidence, while others feel overwhelmed by too many suggestions.",
+    "prompt": "In your learning process, does AI reduce stress or increase stress? Why?"
+  },
+  {
+    "topic_id": "ai_daily_005",
+    "scene": "Work",
+    "title": "Speed vs quality",
+    "intro": "AI can speed up first drafts, but final quality still depends on human review.",
+    "prompt": "In your experience, where should you slow down even when AI helps you go faster?"
+  },
+  {
+    "topic_id": "ai_daily_006",
+    "scene": "Explaining problems",
+    "title": "When AI gets your intent wrong",
+    "intro": "Sometimes AI output is fluent but misses what you actually mean.",
+    "prompt": "What signals tell you that AI misunderstood your intent?"
+  },
+  {
+    "topic_id": "ai_daily_007",
+    "scene": "Plans and decisions",
+    "title": "Adopting AI tools",
+    "intro": "Teams often debate whether to use one AI tool deeply or many tools lightly.",
+    "prompt": "If you had to choose one approach, which would you pick and why?"
+  },
+  {
+    "topic_id": "ai_daily_008",
+    "scene": "Asking for help",
+    "title": "Prompt clarity",
+    "intro": "A small change in prompt wording can produce very different results.",
+    "prompt": "What is one habit that helps you write clearer prompts?"
+  },
+  {
+    "topic_id": "ai_daily_009",
+    "scene": "Feelings",
+    "title": "Feeling uneasy about AI",
+    "intro": "People can see AI benefits and still feel uneasy about long-term impact.",
+    "prompt": "Do you feel more hopeful or more uneasy about AI recently? What changed?"
+  },
+  {
+    "topic_id": "ai_daily_010",
+    "scene": "Work",
+    "title": "AI and meeting notes",
+    "intro": "AI summaries can save time after meetings, but details may be lost.",
+    "prompt": "Would you rather have a shorter summary or a more detailed one? Why?"
+  },
+  {
+    "topic_id": "ai_daily_011",
+    "scene": "Daily life",
+    "title": "AI in personal planning",
+    "intro": "Some people use AI to plan their week, while others prefer manual planning.",
+    "prompt": "Do you use AI to plan your tasks, or do you prefer your own system?"
+  },
+  {
+    "topic_id": "ai_daily_012",
+    "scene": "Opinions",
+    "title": "AI and originality",
+    "intro": "A common concern is that heavy AI use might make ideas less original.",
+    "prompt": "How do you keep your own voice when AI helps you draft content?"
+  },
+  {
+    "topic_id": "ai_daily_013",
+    "scene": "Explaining problems",
+    "title": "Tool overload",
+    "intro": "Too many AI tools can create friction instead of saving time.",
+    "prompt": "What is one sign that your AI workflow is getting too complicated?"
+  },
+  {
+    "topic_id": "ai_daily_014",
+    "scene": "Plans and decisions",
+    "title": "Choosing what to automate",
+    "intro": "Not every task should be automated, even if it can be automated.",
+    "prompt": "Which type of task do you refuse to automate, and why?"
+  },
+  {
+    "topic_id": "ai_daily_015",
+    "scene": "Asking for help",
+    "title": "Getting unstuck",
+    "intro": "When you are stuck, AI can provide options quickly, but too many options can distract you.",
+    "prompt": "When you ask AI for help, do you prefer one suggestion or multiple options?"
+  },
+  {
+    "topic_id": "ai_daily_016",
+    "scene": "Work",
+    "title": "AI in product thinking",
+    "intro": "AI can help generate feature ideas, but not all ideas fit real user needs.",
+    "prompt": "How do you filter AI-generated ideas before turning them into real product decisions?"
+  },
+  {
+    "topic_id": "ai_daily_017",
+    "scene": "News discussion",
+    "title": "AI regulation",
+    "intro": "Some people want stricter AI rules for safety, while others worry regulation will slow innovation.",
+    "prompt": "Where do you stand between safety and speed, and why?"
+  },
+  {
+    "topic_id": "ai_daily_018",
+    "scene": "Feelings",
+    "title": "Confidence in English with AI",
+    "intro": "AI feedback can help language learners speak more confidently, but it can also create dependence.",
+    "prompt": "Do AI tools make you more independent or more dependent in language learning?"
+  },
+  {
+    "topic_id": "ai_daily_019",
+    "scene": "Daily life",
+    "title": "AI recommendations",
+    "intro": "Recommendation systems can save search time, but they may narrow your perspective.",
+    "prompt": "Have AI recommendations helped you discover better content, or trapped you in repetition?"
+  },
+  {
+    "topic_id": "ai_daily_020",
+    "scene": "Opinions",
+    "title": "Human judgment",
+    "intro": "Even with strong AI assistance, human judgment still matters in ambiguous situations.",
+    "prompt": "What decision types should always remain human-led, in your opinion?"
+  }
+]

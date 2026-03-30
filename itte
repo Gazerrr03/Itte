@@ -1,0 +1,1760 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.1.0"
+
+resolve_script_path() {
+  local source_path="${BASH_SOURCE[0]}"
+  local dir=""
+  while [[ -h "$source_path" ]]; do
+    dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+    source_path="$(readlink "$source_path")"
+    [[ "$source_path" != /* ]] && source_path="${dir}/${source_path}"
+  done
+  dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  printf "%s/%s" "$dir" "$(basename "$source_path")"
+}
+
+SCRIPT_PATH="$(resolve_script_path)"
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+DATA_DIR="${HOME}/.itte"
+PROFILE_FILE="${DATA_DIR}/profile.json"
+SUMMARIES_FILE="${DATA_DIR}/summaries.jsonl"
+TOPICS_FILE="${DATA_DIR}/daily_topics.json"
+SESSION_FILE="${DATA_DIR}/current_session.json"
+RUN_LOG_FILE="${DATA_DIR}/run_logs.jsonl"
+
+HISTORY_JSON='[]'
+LAST_SUMMARY_JSON=""
+CURRENT_SCENE_HINT="General conversation"
+MODEL_REPLY=""
+MODEL_REPLY_STREAMED=0
+READ_INPUT_LINE_VALUE=""
+INPUT_HISTORY_POS=0
+INPUT_HISTORY_STASH=""
+MAX_INPUT_HISTORY=200
+declare -a INPUT_HISTORY=()
+PREVIEW_ROWS=1
+
+SESSION_ID=""
+SESSION_STARTED_AT=""
+
+USER_TURNS=0
+ASSISTANT_TURNS=0
+TOTAL_USER_CHARS=0
+OPTIMIZE_COUNT=0
+HELP_COUNT=0
+DAILY_COUNT=0
+
+ITTE_API_BASE="${ITTE_API_BASE:-}"
+ITTE_API_KEY="${ITTE_API_KEY:-}"
+ITTE_MODEL="${ITTE_MODEL:-}"
+ITTE_TEMPERATURE="${ITTE_TEMPERATURE:-1}"
+ITTE_STREAM="${ITTE_STREAM:-1}"
+ITTE_COLOR_COMMANDS="${ITTE_COLOR_COMMANDS:-1}"
+ITTE_SHOW_THINKING="${ITTE_SHOW_THINKING:-1}"
+API_URL=""
+
+iso_utc() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+epoch_ms() {
+  printf "%s000" "$(date +%s)"
+}
+
+new_request_id() {
+  printf "req_%s_%04d" "$(date +%Y%m%d%H%M%S)" "$((RANDOM % 10000))"
+}
+
+trim() {
+  local input="${1:-}"
+  printf "%s" "$input" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+append_run_log() {
+  local request_id="$1"
+  local mode="$2"
+  local stream_flag="$3"
+  local latency_ms="$4"
+  local error_msg="$5"
+  local http_code="$6"
+  local prompt_tokens="${7:-}"
+  local completion_tokens="${8:-}"
+  local total_tokens="${9:-}"
+  local provider_request_id="${10:-}"
+  local logged_at
+
+  logged_at="$(iso_utc)"
+
+  jq -c -n \
+    --arg logged_at "$logged_at" \
+    --arg session_id "$SESSION_ID" \
+    --arg request_id "$request_id" \
+    --arg provider_request_id "$provider_request_id" \
+    --arg mode "$mode" \
+    --arg stream_flag "$stream_flag" \
+    --argjson latency_ms "$latency_ms" \
+    --arg http_code "$http_code" \
+    --arg error "$error_msg" \
+    --arg prompt_tokens "$prompt_tokens" \
+    --arg completion_tokens "$completion_tokens" \
+    --arg total_tokens "$total_tokens" \
+    '{
+      logged_at: $logged_at,
+      session_id: $session_id,
+      request_id: $request_id,
+      provider_request_id: (if $provider_request_id == "" then null else $provider_request_id end),
+      mode: $mode,
+      stream: ($stream_flag == "1"),
+      latency_ms: $latency_ms,
+      http_code: $http_code,
+      error: (if $error == "" then null else $error end),
+      tokens: {
+        prompt: (if $prompt_tokens == "" then null else ($prompt_tokens | tonumber) end),
+        completion: (if $completion_tokens == "" then null else ($completion_tokens | tonumber) end),
+        total: (if $total_tokens == "" then null else ($total_tokens | tonumber) end)
+      }
+    }' >> "$RUN_LOG_FILE"
+}
+
+is_known_slash_command() {
+  local token="$1"
+  case "$token" in
+    /optimize|/help|/daily|/commands|/logs)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+extract_embedded_command_token() {
+  local line="$1"
+  awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "/optimize" || $i == "/help" || $i == "/daily" || $i == "/commands" || $i == "/logs") {
+          print $i
+          exit
+        }
+      }
+    }
+  ' <<<"$line"
+}
+
+strip_first_command_token() {
+  local line="$1"
+  local token="$2"
+  awk -v cmd="$token" '
+    {
+      found = 0
+      out = ""
+      for (i = 1; i <= NF; i++) {
+        if (!found && $i == cmd) {
+          found = 1
+          continue
+        }
+        if (out == "") out = $i
+        else out = out " " $i
+      }
+      print out
+    }
+  ' <<<"$line"
+}
+
+add_input_history() {
+  local line="$1"
+  local last_index=-1
+  local len=0
+
+  [[ -z "$(trim "$line")" ]] && return 0
+
+  len="${#INPUT_HISTORY[@]}"
+  if (( len > 0 )); then
+    last_index=$((len - 1))
+    if [[ "${INPUT_HISTORY[$last_index]}" == "$line" ]]; then
+      INPUT_HISTORY_POS="${#INPUT_HISTORY[@]}"
+      INPUT_HISTORY_STASH=""
+      return 0
+    fi
+  fi
+
+  INPUT_HISTORY+=("$line")
+  len="${#INPUT_HISTORY[@]}"
+  if (( len > MAX_INPUT_HISTORY )); then
+    INPUT_HISTORY=("${INPUT_HISTORY[@]:1}")
+  fi
+  INPUT_HISTORY_POS="${#INPUT_HISTORY[@]}"
+  INPUT_HISTORY_STASH=""
+}
+
+is_kimi_k25_model() {
+  local model_lc
+  model_lc="$(printf "%s" "$ITTE_MODEL" | tr '[:upper:]' '[:lower:]')"
+  [[ "$model_lc" == *"kimi-k2.5"* ]]
+}
+
+history_prev_line() {
+  local current="$1"
+  local len="${#INPUT_HISTORY[@]}"
+  if (( len == 0 )); then
+    printf "%s" "$current"
+    return 0
+  fi
+
+  if (( INPUT_HISTORY_POS == len )); then
+    INPUT_HISTORY_STASH="$current"
+  fi
+  if (( INPUT_HISTORY_POS > 0 )); then
+    INPUT_HISTORY_POS=$((INPUT_HISTORY_POS - 1))
+  fi
+  printf "%s" "${INPUT_HISTORY[$INPUT_HISTORY_POS]}"
+}
+
+history_next_line() {
+  local len="${#INPUT_HISTORY[@]}"
+  if (( len == 0 )); then
+    printf "%s" "${1:-}"
+    return 0
+  fi
+
+  if (( INPUT_HISTORY_POS < len )); then
+    INPUT_HISTORY_POS=$((INPUT_HISTORY_POS + 1))
+  fi
+  if (( INPUT_HISTORY_POS == len )); then
+    printf "%s" "$INPUT_HISTORY_STASH"
+  else
+    printf "%s" "${INPUT_HISTORY[$INPUT_HISTORY_POS]}"
+  fi
+}
+
+render_input_preview() {
+  local line="$1"
+  local light_purple="\033[38;5;183m"
+  local reset="\033[0m"
+  local cols text_len rows i
+  local prefix suffix matched lead cmd trail
+
+  cols="${COLUMNS:-}"
+  if [[ -z "$cols" || ! "$cols" =~ ^[0-9]+$ || "$cols" -le 0 ]]; then
+    cols="$(tput cols 2>/dev/null || echo 80)"
+  fi
+  if [[ -z "$cols" || ! "$cols" =~ ^[0-9]+$ || "$cols" -le 0 ]]; then
+    cols=80
+  fi
+
+  text_len=$((2 + ${#line}))
+  rows=$(((text_len + cols - 1) / cols))
+  if (( rows < 1 )); then
+    rows=1
+  fi
+
+  # Clear previously rendered wrapped rows before painting the latest input.
+  if (( PREVIEW_ROWS > 1 )); then
+    for ((i = 1; i < PREVIEW_ROWS; i++)); do
+      printf "\033[1A\r"
+    done
+  fi
+  for ((i = 1; i <= PREVIEW_ROWS; i++)); do
+    printf "\033[2K"
+    if (( i < PREVIEW_ROWS )); then
+      printf "\033[1B\r"
+    fi
+  done
+  if (( PREVIEW_ROWS > 1 )); then
+    for ((i = 1; i < PREVIEW_ROWS; i++)); do
+      printf "\033[1A\r"
+    done
+  fi
+  printf "\r"
+
+  if [[ "$line" =~ (^|[[:space:]])(/optimize|/help|/daily|/commands|/logs)([[:space:]]|$) ]]; then
+    matched="${BASH_REMATCH[0]}"
+    lead="${BASH_REMATCH[1]}"
+    cmd="${BASH_REMATCH[2]}"
+    trail="${BASH_REMATCH[3]}"
+    prefix="${line%%"$matched"*}"
+    suffix="${line#*"$matched"}"
+    printf "\r\033[2K> %s%s%b%s%b%s%s" "$prefix" "$lead" "$light_purple" "$cmd" "$reset" "$trail" "$suffix"
+  else
+    printf "\r\033[2K> %s" "$line"
+  fi
+
+  PREVIEW_ROWS="$rows"
+}
+
+read_input_line() {
+  local line="" ch esc_1 esc_2
+  READ_INPUT_LINE_VALUE=""
+  INPUT_HISTORY_POS="${#INPUT_HISTORY[@]}"
+  INPUT_HISTORY_STASH=""
+  PREVIEW_ROWS=1
+
+  if [[ "$ITTE_COLOR_COMMANDS" != "1" || ! -t 0 || ! -t 1 ]]; then
+    printf "> "
+    if ! IFS= read -r line; then
+      return 1
+    fi
+    READ_INPUT_LINE_VALUE="$line"
+    return 0
+  fi
+
+  printf "> "
+  while true; do
+    if ! IFS= read -rsn1 ch; then
+      echo
+      return 1
+    fi
+
+    # In some terminals Enter is consumed as an empty char with `read -n1`.
+    if [[ -z "$ch" ]]; then
+      echo
+      READ_INPUT_LINE_VALUE="$line"
+      return 0
+    fi
+
+    case "$ch" in
+      $'\n'|$'\r')
+        echo
+        READ_INPUT_LINE_VALUE="$line"
+        return 0
+        ;;
+      $'\177'|$'\b')
+        [[ -n "$line" ]] && line="${line%?}"
+        ;;
+      $'\004')
+        if [[ -z "$line" ]]; then
+          echo
+          return 1
+        fi
+        ;;
+      $'\025')
+        line=""
+        ;;
+      $'\033')
+        # Handle common ANSI escape sequences, including history navigation.
+        IFS= read -rsn1 esc_1 || true
+        if [[ "$esc_1" == "[" ]]; then
+          IFS= read -rsn1 esc_2 || true
+          case "$esc_2" in
+            A)
+              line="$(history_prev_line "$line")"
+              ;;
+            B)
+              line="$(history_next_line "$line")"
+              ;;
+          esac
+        fi
+        ;;
+      *)
+        line+="$ch"
+        ;;
+    esac
+
+    render_input_preview "$line"
+  done
+}
+
+print_thinking_notice() {
+  if [[ "$ITTE_SHOW_THINKING" != "1" ]]; then
+    return 0
+  fi
+  echo "thinking..." >&2
+}
+
+require_bin() {
+  local name="$1"
+  if ! command -v "$name" >/dev/null 2>&1; then
+    echo "Error: Missing dependency '$name'. Please install it and retry."
+    exit 1
+  fi
+}
+
+load_dotenv_if_exists() {
+  if [[ -f ".env" ]]; then
+    # shellcheck disable=SC1091
+    set -a && source ".env" && set +a
+  fi
+}
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  ./itte
+  ./itte --help
+  ./itte --version
+  ./itte --install
+  ./itte --uninstall
+
+Commands in session:
+  /optimize <text>   Optimize your wording naturally
+  /help <text>       Scaffold a sentence when you get stuck
+  /daily             Start one guided daily round
+  /logs [n]          Show latest structured run logs
+  /commands          Show command list
+EOF
+}
+
+install_to_user_bin() {
+  local bin_dir="${HOME}/.local/bin"
+  local target="${bin_dir}/itte"
+
+  mkdir -p "$bin_dir"
+  ln -sf "$SCRIPT_PATH" "$target"
+
+  echo "Installed: $target -> $SCRIPT_PATH"
+  echo
+  if [[ ":${PATH}:" != *":${bin_dir}:"* ]]; then
+    cat <<EOF
+Your PATH does not include ${bin_dir} yet.
+Add this line to ~/.zshrc (or your shell profile), then restart terminal:
+  export PATH="${bin_dir}:\$PATH"
+EOF
+  else
+    echo "You can now run: itte"
+  fi
+}
+
+uninstall_from_user_bin() {
+  local target="${HOME}/.local/bin/itte"
+  if [[ -L "$target" || -f "$target" ]]; then
+    rm -f "$target"
+    echo "Removed: $target"
+  else
+    echo "Nothing to remove. ${target} does not exist."
+  fi
+}
+
+print_welcome() {
+  local line
+  local banner_delay="${ITTE_BANNER_DELAY_SEC:-0.06}"
+  local text_char_delay="${ITTE_WELCOME_CHAR_DELAY_SEC:-0.015}"
+
+  while IFS= read -r line; do
+    echo "$line"
+    if [[ -t 1 ]]; then
+      sleep "$banner_delay"
+    fi
+  done <<'EOF'
+                 ,----,         ,----,
+               ,/   .`|       ,/   .`|
+   ,---,     ,`   .'  :     ,`   .'  :     ,---,.
+,`--.' |   ;    ;     /   ;    ;     /   ,'  .' |
+|   :  : .'___,/    ,'  .'___,/    ,'  ,---.'   |
+:   |  ' |    :     |   |    :     |   |   |   .'
+|   :  | ;    |.';  ;   ;    |.';  ;   :   :  |-,
+'   '  ; `----'  |  |   `----'  |  |   :   |  ;/|
+|   |  |     '   :  ;       '   :  ;   |   :   .'
+'   :  ;     |   |  '       |   |  '   |   |  |-,
+|   |  '     '   :  |       '   :  |   '   :  ;/|
+'   :  |     ;   |.'        ;   |.'    |   |    \
+;   |.'      '---'          '---'      |   :   .'
+'---'                                  |   | ,'
+                                       `----'
+EOF
+
+  while IFS= read -r line; do
+    if [[ -t 1 && "$line" != "---------------" ]]; then
+      if [[ -z "$line" ]]; then
+        echo
+      else
+        local i ch
+        for ((i = 0; i < ${#line}; i++)); do
+          ch="${line:i:1}"
+          printf "%s" "$ch"
+          sleep "$text_char_delay"
+        done
+        echo
+      fi
+    else
+      echo "$line"
+    fi
+  done <<'EOF'
+You’re in.
+
+Let’s keep the conversation natural.
+No pressure, no over-correction.
+
+---------------
+
+If you need support:
+  /optimize <text>
+  /help <text>
+  /daily
+  /logs [n]
+
+---------------
+
+Start with one sentence.
+EOF
+}
+
+print_commands() {
+  cat <<'EOF'
+/optimize <text>   -> optimize your expression
+/help <text>       -> scaffold expression step-by-step
+/daily             -> start one daily guided round
+/logs [n]          -> show latest structured run logs
+EOF
+}
+
+ensure_data_files() {
+  local now
+  now="$(iso_utc)"
+
+  mkdir -p "$DATA_DIR"
+
+  if [[ ! -f "$TOPICS_FILE" ]]; then
+    if [[ -f "${SCRIPT_DIR}/daily_topics.json" ]]; then
+      cp "${SCRIPT_DIR}/daily_topics.json" "$TOPICS_FILE"
+    else
+      cat > "$TOPICS_FILE" <<'EOF'
+[
+  {
+    "topic_id": "ai_daily_001",
+    "scene": "News discussion",
+    "title": "AI assistants in daily work",
+    "intro": "Some people use AI tools every day to save time, while others worry this makes people think less.",
+    "prompt": "What about you: do AI tools usually make your work easier, or more confusing?"
+  }
+]
+EOF
+    fi
+  fi
+
+  if [[ ! -f "$PROFILE_FILE" ]]; then
+    jq -n --arg now "$now" '{
+      schema_version: "itte_profile_v0",
+      created_at: $now,
+      updated_at: $now,
+      stats: {
+        total_sessions: 0,
+        total_turns: 0,
+        total_optimize_requests: 0,
+        total_help_requests: 0,
+        total_daily_requests: 0
+      },
+      language_profile: {
+        estimated_level: "unknown",
+        common_breakdown_types: [],
+        preferred_sentence_complexity: "simple_to_medium",
+        frequent_intents: [],
+        optimize_usage_pattern: {
+          optimize_per_session_avg: 0
+        }
+      },
+      preference_profile: {
+        prefers_more_guidance: null,
+        prefers_short_feedback: null,
+        preferred_topics: [],
+        work_vs_life_ratio: "unknown",
+        daily_mode_frequency: "low"
+      },
+      _counters: {
+        topic_counts: {},
+        intent_counts: {}
+      }
+    }' > "$PROFILE_FILE"
+  fi
+
+  if [[ ! -f "$SUMMARIES_FILE" ]]; then
+    : > "$SUMMARIES_FILE"
+  fi
+
+  if [[ ! -f "$RUN_LOG_FILE" ]]; then
+    : > "$RUN_LOG_FILE"
+  fi
+}
+
+validate_env() {
+  local missing=()
+  local base_no_slash
+  ITTE_API_BASE="${ITTE_API_BASE:-}"
+  ITTE_API_KEY="${ITTE_API_KEY:-}"
+  ITTE_MODEL="${ITTE_MODEL:-}"
+
+  [[ -z "$ITTE_API_BASE" ]] && missing+=("ITTE_API_BASE")
+  [[ -z "$ITTE_API_KEY" ]] && missing+=("ITTE_API_KEY")
+  [[ -z "$ITTE_MODEL" ]] && missing+=("ITTE_MODEL")
+
+  if (( ${#missing[@]} > 0 )); then
+    echo "Configuration error: missing environment variables."
+    local item
+    for item in "${missing[@]}"; do
+      echo "  - $item"
+    done
+    cat <<'EOF'
+
+Quick setup:
+  1) Copy .env.example to .env
+  2) Fill your API values
+  3) Run ./itte again
+EOF
+    exit 1
+  fi
+
+  if [[ ! "$ITTE_TEMPERATURE" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+    echo "Configuration error: ITTE_TEMPERATURE must be a number (for example: 1 or 0.7)."
+    exit 1
+  fi
+
+  if [[ ! "$ITTE_STREAM" =~ ^(0|1)$ ]]; then
+    echo "Configuration error: ITTE_STREAM must be 0 or 1."
+    exit 1
+  fi
+
+  if [[ ! "$ITTE_COLOR_COMMANDS" =~ ^(0|1)$ ]]; then
+    echo "Configuration error: ITTE_COLOR_COMMANDS must be 0 or 1."
+    exit 1
+  fi
+
+  if [[ ! "$ITTE_SHOW_THINKING" =~ ^(0|1)$ ]]; then
+    echo "Configuration error: ITTE_SHOW_THINKING must be 0 or 1."
+    exit 1
+  fi
+
+  base_no_slash="${ITTE_API_BASE%/}"
+  if [[ "$base_no_slash" == */v1 ]]; then
+    API_URL="${base_no_slash}/chat/completions"
+  else
+    API_URL="${base_no_slash}/v1/chat/completions"
+  fi
+}
+
+new_session_id() {
+  printf "sess_%s_%04d" "$(date +%Y%m%d%H%M%S)" "$((RANDOM % 10000))"
+}
+
+init_session() {
+  SESSION_ID="$(new_session_id)"
+  SESSION_STARTED_AT="$(iso_utc)"
+  HISTORY_JSON='[]'
+  LAST_SUMMARY_JSON=""
+  CURRENT_SCENE_HINT="General conversation"
+
+  USER_TURNS=0
+  ASSISTANT_TURNS=0
+  TOTAL_USER_CHARS=0
+  OPTIMIZE_COUNT=0
+  HELP_COUNT=0
+  DAILY_COUNT=0
+}
+
+session_stats_json() {
+  local avg_user_chars
+  if (( USER_TURNS > 0 )); then
+    avg_user_chars=$((TOTAL_USER_CHARS / USER_TURNS))
+  else
+    avg_user_chars=0
+  fi
+
+  jq -n \
+    --argjson user_turns "$USER_TURNS" \
+    --argjson assistant_turns "$ASSISTANT_TURNS" \
+    --argjson optimize_count "$OPTIMIZE_COUNT" \
+    --argjson help_count "$HELP_COUNT" \
+    --argjson daily_count "$DAILY_COUNT" \
+    --argjson avg_user_chars "$avg_user_chars" \
+    '{
+      user_turns: $user_turns,
+      assistant_turns: $assistant_turns,
+      optimize_count: $optimize_count,
+      help_count: $help_count,
+      daily_count: $daily_count,
+      avg_user_chars: $avg_user_chars
+    }'
+}
+
+write_current_session() {
+  local updated_at has_summary summary_json
+  updated_at="$(iso_utc)"
+  if [[ -n "$LAST_SUMMARY_JSON" ]]; then
+    has_summary="true"
+    summary_json="$LAST_SUMMARY_JSON"
+  else
+    has_summary="false"
+    summary_json="null"
+  fi
+
+  jq -n \
+    --arg session_id "$SESSION_ID" \
+    --arg started_at "$SESSION_STARTED_AT" \
+    --arg updated_at "$updated_at" \
+    --arg current_scene "$CURRENT_SCENE_HINT" \
+    --argjson stats "$(session_stats_json)" \
+    --argjson has_summary "$has_summary" \
+    --argjson last_summary "$summary_json" \
+    '{
+      session_id: $session_id,
+      started_at: $started_at,
+      updated_at: $updated_at,
+      current_scene: $current_scene,
+      stats: $stats,
+      has_summary: $has_summary,
+      last_summary: $last_summary
+    }' > "$SESSION_FILE"
+}
+
+append_history() {
+  local role="$1"
+  local content="$2"
+  HISTORY_JSON="$(
+    jq --arg role "$role" --arg content "$content" '
+      . + [{role: $role, content: $content}]
+      | if length > 40 then .[-40:] else . end
+    ' <<<"$HISTORY_JSON"
+  )"
+}
+
+add_user_message() {
+  local text="$1"
+  append_history "user" "$text"
+  USER_TURNS=$((USER_TURNS + 1))
+  TOTAL_USER_CHARS=$((TOTAL_USER_CHARS + ${#text}))
+}
+
+add_assistant_message() {
+  local text="$1"
+  append_history "assistant" "$text"
+  ASSISTANT_TURNS=$((ASSISTANT_TURNS + 1))
+}
+
+recent_history_json() {
+  local n="${1:-24}"
+  jq --argjson n "$n" 'if length > $n then .[-$n:] else . end' <<<"$HISTORY_JSON"
+}
+
+extract_content_text() {
+  local body="$1"
+  jq -r '
+    if (.choices[0].message.content | type) == "string" then
+      .choices[0].message.content
+    elif (.choices[0].message.content | type) == "array" then
+      [ .choices[0].message.content[] | select(.type == "text") | .text ] | join("\n")
+    else
+      empty
+    end
+  ' <<<"$body"
+}
+
+call_chat_completion() {
+  local mode="$1"
+  local system_prompt="$2"
+  local messages_json="$3"
+  local temperature="$4"
+  local max_tokens="$5"
+  local stream_requested="${6:-0}"
+
+  local payload raw_response body http_code api_error content req_temp
+  local prompt_tokens completion_tokens total_tokens provider_request_id
+  local attempt request_id start_ms end_ms latency_ms stream_json
+  local stream_enabled stream_line stream_data stream_chunk stream_saw_chunk stream_body_buffer
+  local reasoning_seen retry_reason thinking_mode thinking_notice_printed
+  local log_error=""
+
+  MODEL_REPLY=""
+  MODEL_REPLY_STREAMED=0
+  request_id="$(new_request_id)"
+  start_ms="$(epoch_ms)"
+  stream_enabled=0
+  if [[ "$stream_requested" == "1" && "$ITTE_STREAM" == "1" ]]; then
+    stream_enabled=1
+  fi
+
+  retry_reason=""
+  thinking_notice_printed=0
+  for attempt in 1 2; do
+    req_temp="$temperature"
+    thinking_mode=""
+    if [[ "$attempt" -eq 2 && "$retry_reason" == "invalid_temperature" ]]; then
+      req_temp="1"
+    elif [[ "$attempt" -eq 2 && "$retry_reason" == "kimi_reasoning_only" ]]; then
+      req_temp="0.6"
+      thinking_mode="disabled"
+    fi
+
+    if [[ "$stream_enabled" -eq 1 ]]; then
+      stream_json="true"
+    else
+      stream_json="false"
+    fi
+
+    payload="$(
+      jq -n \
+        --arg model "$ITTE_MODEL" \
+        --arg system_prompt "$system_prompt" \
+        --argjson messages "$messages_json" \
+        --argjson temperature "$req_temp" \
+        --argjson max_tokens "$max_tokens" \
+        --argjson stream "$stream_json" \
+        --arg thinking_mode "$thinking_mode" \
+        '{
+          model: $model,
+          temperature: $temperature,
+          max_tokens: $max_tokens,
+          stream: $stream,
+          messages: ([{role: "system", content: $system_prompt}] + $messages)
+        }
+        | if $thinking_mode == "" then . else (. + {thinking: {type: $thinking_mode}}) end'
+    )"
+
+    api_error=""
+    content=""
+    prompt_tokens=""
+    completion_tokens=""
+    total_tokens=""
+    provider_request_id=""
+    reasoning_seen=0
+
+    if [[ "$thinking_notice_printed" -eq 0 ]]; then
+      print_thinking_notice
+      thinking_notice_printed=1
+    fi
+
+    if [[ "$stream_enabled" -eq 1 ]]; then
+      stream_saw_chunk=0
+      stream_body_buffer=""
+      http_code=""
+
+      while IFS= read -r stream_line; do
+        if [[ "$stream_line" == "__ITTE_HTTP_CODE__:"* ]]; then
+          http_code="${stream_line#__ITTE_HTTP_CODE__:}"
+          continue
+        fi
+
+        if [[ "$stream_line" == data:* ]]; then
+          stream_data="${stream_line#data: }"
+          if [[ "$stream_data" == "[DONE]" ]]; then
+            continue
+          fi
+          if jq -e . >/dev/null 2>&1 <<<"$stream_data"; then
+            if [[ -z "$provider_request_id" ]]; then
+              provider_request_id="$(jq -r '.id // empty' <<<"$stream_data")"
+            fi
+            stream_chunk="$(jq -r '.choices[0].delta.content // empty' <<<"$stream_data")"
+            if [[ -n "$stream_chunk" ]]; then
+              MODEL_REPLY+="$stream_chunk"
+              stream_saw_chunk=1
+              MODEL_REPLY_STREAMED=1
+              printf "%s" "$stream_chunk"
+            fi
+            if [[ -z "$(jq -r '.choices[0].delta.reasoning_content // empty' <<<"$stream_data")" ]]; then
+              :
+            else
+              reasoning_seen=1
+            fi
+            if [[ -z "$prompt_tokens" ]]; then
+              prompt_tokens="$(jq -r '.usage.prompt_tokens // empty' <<<"$stream_data")"
+            fi
+            if [[ -z "$completion_tokens" ]]; then
+              completion_tokens="$(jq -r '.usage.completion_tokens // empty' <<<"$stream_data")"
+            fi
+            if [[ -z "$total_tokens" ]]; then
+              total_tokens="$(jq -r '.usage.total_tokens // empty' <<<"$stream_data")"
+            fi
+            if [[ -z "$api_error" ]]; then
+              api_error="$(jq -r '.error.message // empty' <<<"$stream_data")"
+            fi
+          fi
+          continue
+        fi
+
+        if [[ -n "$stream_line" ]]; then
+          stream_body_buffer+="${stream_line}"$'\n'
+        fi
+      done < <(
+        curl -sS -N -m 120 \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${ITTE_API_KEY}" \
+          -d "$payload" \
+          "$API_URL" \
+          -w $'\n__ITTE_HTTP_CODE__:%{http_code}\n'
+      )
+
+      if [[ -z "$http_code" ]]; then
+        http_code="000"
+      fi
+
+      # Some providers may ignore stream and return one JSON object.
+      if [[ "$stream_saw_chunk" -eq 0 && -n "$stream_body_buffer" ]]; then
+        body="$(trim "$stream_body_buffer")"
+        api_error="$(jq -r '.error.message // empty' <<<"$body" 2>/dev/null || true)"
+        content="$(extract_content_text "$body")"
+        provider_request_id="$(jq -r '.id // empty' <<<"$body" 2>/dev/null || true)"
+        prompt_tokens="$(jq -r '.usage.prompt_tokens // empty' <<<"$body" 2>/dev/null || true)"
+        completion_tokens="$(jq -r '.usage.completion_tokens // empty' <<<"$body" 2>/dev/null || true)"
+        total_tokens="$(jq -r '.usage.total_tokens // empty' <<<"$body" 2>/dev/null || true)"
+        if [[ -n "$(jq -r '.choices[0].message.reasoning_content // empty' <<<"$body" 2>/dev/null || true)" ]]; then
+          reasoning_seen=1
+        fi
+        if [[ -n "$content" ]]; then
+          MODEL_REPLY="$content"
+          MODEL_REPLY_STREAMED=0
+        fi
+      fi
+    else
+      raw_response="$(
+        curl -sS -m 120 \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${ITTE_API_KEY}" \
+          -d "$payload" \
+          "$API_URL" \
+          -w $'\n%{http_code}'
+      )"
+
+      body="$(printf "%s" "$raw_response" | sed '$d')"
+      http_code="$(printf "%s" "$raw_response" | tail -n1)"
+      api_error="$(jq -r '.error.message // empty' <<<"$body" 2>/dev/null || true)"
+      content="$(extract_content_text "$body")"
+      provider_request_id="$(jq -r '.id // empty' <<<"$body" 2>/dev/null || true)"
+      prompt_tokens="$(jq -r '.usage.prompt_tokens // empty' <<<"$body" 2>/dev/null || true)"
+      completion_tokens="$(jq -r '.usage.completion_tokens // empty' <<<"$body" 2>/dev/null || true)"
+      total_tokens="$(jq -r '.usage.total_tokens // empty' <<<"$body" 2>/dev/null || true)"
+      if [[ -n "$(jq -r '.choices[0].message.reasoning_content // empty' <<<"$body" 2>/dev/null || true)" ]]; then
+        reasoning_seen=1
+      fi
+      MODEL_REPLY="$content"
+    fi
+
+    # Some models/providers only allow temperature=1. Retry once automatically.
+    if [[ "$attempt" -eq 1 && "$temperature" != "1" && "$api_error" == *"invalid temperature"* ]]; then
+      MODEL_REPLY=""
+      MODEL_REPLY_STREAMED=0
+      retry_reason="invalid_temperature"
+      continue
+    fi
+
+    if [[ ! "$http_code" =~ ^2 ]]; then
+      log_error="API request failed (HTTP ${http_code})."
+      if [[ -n "$api_error" ]]; then
+        log_error="${log_error} ${api_error}"
+      fi
+      echo "Error: $log_error" >&2
+      end_ms="$(epoch_ms)"
+      latency_ms=$((end_ms - start_ms))
+      append_run_log "$request_id" "$mode" "$stream_enabled" "$latency_ms" "$log_error" "$http_code" "$prompt_tokens" "$completion_tokens" "$total_tokens" "$provider_request_id"
+      return 1
+    fi
+
+    if [[ -n "$api_error" ]]; then
+      log_error="API returned an error: $api_error"
+      echo "Error: $log_error" >&2
+      end_ms="$(epoch_ms)"
+      latency_ms=$((end_ms - start_ms))
+      append_run_log "$request_id" "$mode" "$stream_enabled" "$latency_ms" "$log_error" "$http_code" "$prompt_tokens" "$completion_tokens" "$total_tokens" "$provider_request_id"
+      return 1
+    fi
+
+    if [[ -z "$MODEL_REPLY" ]]; then
+      if [[ "$attempt" -eq 1 && "$reasoning_seen" -eq 1 ]] && is_kimi_k25_model; then
+        # Kimi K2.5 may spend all completion tokens on reasoning_content.
+        # Retry once with thinking disabled and provider-required temperature.
+        MODEL_REPLY=""
+        MODEL_REPLY_STREAMED=0
+        retry_reason="kimi_reasoning_only"
+        continue
+      fi
+      log_error="Empty model response."
+      echo "Error: $log_error" >&2
+      end_ms="$(epoch_ms)"
+      latency_ms=$((end_ms - start_ms))
+      append_run_log "$request_id" "$mode" "$stream_enabled" "$latency_ms" "$log_error" "$http_code" "$prompt_tokens" "$completion_tokens" "$total_tokens" "$provider_request_id"
+      return 1
+    fi
+
+    if [[ "$MODEL_REPLY_STREAMED" -eq 1 ]]; then
+      echo
+    fi
+
+    end_ms="$(epoch_ms)"
+    latency_ms=$((end_ms - start_ms))
+    append_run_log "$request_id" "$mode" "$stream_enabled" "$latency_ms" "" "$http_code" "$prompt_tokens" "$completion_tokens" "$total_tokens" "$provider_request_id"
+    return 0
+  done
+
+  log_error="Failed to get a valid response from API."
+  echo "Error: $log_error" >&2
+  end_ms="$(epoch_ms)"
+  latency_ms=$((end_ms - start_ms))
+  append_run_log "$request_id" "$mode" "$stream_enabled" "$latency_ms" "$log_error" "000" "" "" "" ""
+  return 1
+}
+
+system_prompt_normal() {
+  cat <<'EOF'
+You are Itte, an English speaking practice companion.
+
+Product policy:
+- Default to English.
+- Do not behave like a strict teacher.
+- Prioritize understanding and conversation continuity.
+- Do not auto-correct unless user explicitly asks.
+- If user meaning is ambiguous, ask ONE minimal clarification question.
+- If user clearly struggles to express, scaffold gently:
+  1) identify intended meaning
+  2) offer one usable sentence
+  3) offer one optional alternative
+  4) ask a follow-up question
+- Keep replies concise and warm.
+- If user explicitly asks for Chinese explanation, provide brief Chinese support then continue in English.
+
+You should internally handle:
+- S1 clear expression -> acknowledge + continue topic
+- S2 understandable but unnatural -> continue topic, no correction lecture
+- S3 ambiguous meaning -> minimal clarification
+- S4 expression breakdown -> scaffold and continue
+EOF
+}
+
+system_prompt_optimize() {
+  cat <<'EOF'
+You are Itte in optimize mode.
+The user asked /optimize and wants expression polish.
+
+Required output structure:
+1) "I understand you mean ..."
+2) "A more natural way to say it is: ..."
+3) Optional simpler version (if useful)
+4) One follow-up question that returns to conversation
+
+Rules:
+- Default English.
+- Keep it concise.
+- No long grammar lecture.
+- Preserve original meaning.
+EOF
+}
+
+system_prompt_help_mode() {
+  local input_kind="${1:-english}"
+  cat <<'EOF'
+You are Itte in /help mode.
+
+You MUST return plain text in exactly two labeled sections:
+
+Translation Logic:
+<explain simply in English>
+
+Continue the topic:
+<continue the user's topic in natural English>
+
+Global rules:
+- Output plain text only. No markdown, no bullets, no bold, no code blocks.
+- Keep wording simple enough for a 5-year-old learner.
+- Be warm, practical, and non-judgmental.
+- In "Continue the topic", keep the conversation moving with one follow-up question.
+EOF
+
+  if [[ "$input_kind" == "chinese" ]]; then
+    cat <<'EOF'
+
+Chinese-input behavior:
+- The user text after /help is Chinese (or mixed with Chinese).
+- Explain how to translate it into natural English:
+  - what the key meaning is
+  - why the chosen wording sounds natural
+  - one clear natural English sentence to use
+EOF
+  else
+    cat <<'EOF'
+
+English-input behavior:
+- The user text after /help is English.
+- Evaluate expression quality explicitly (natural / awkward / incorrect).
+- If awkward or incorrect, explain what is wrong and how to improve it.
+- Include one improved sentence that the user can directly use.
+EOF
+  fi
+}
+
+system_prompt_summary() {
+  cat <<'EOF'
+You generate concise session summaries for an English practice CLI.
+
+Return STRICT JSON only (no markdown, no explanation) with this schema:
+{
+  "scene": "string",
+  "intents": ["string", "string", "string"],
+  "useful_expressions": ["string", "string", "string"],
+  "try_next_time": "string"
+}
+
+Rules:
+- Use English text.
+- Keep intents 1-3 items.
+- Keep useful_expressions 1-3 items and reusable.
+- try_next_time must be one concrete sentence.
+EOF
+}
+
+generate_response() {
+  local mode="$1"
+  local mode_arg="${2:-}"
+  local system_prompt messages
+
+  MODEL_REPLY=""
+  MODEL_REPLY_STREAMED=0
+  messages="$(recent_history_json 24)"
+  case "$mode" in
+    normal)
+      system_prompt="$(system_prompt_normal)"
+      call_chat_completion "normal" "$system_prompt" "$messages" "$ITTE_TEMPERATURE" "420" "1"
+      ;;
+    optimize)
+      system_prompt="$(system_prompt_optimize)"
+      call_chat_completion "optimize" "$system_prompt" "$messages" "$ITTE_TEMPERATURE" "360" "1"
+      ;;
+    help)
+      system_prompt="$(system_prompt_help_mode "$mode_arg")"
+      call_chat_completion "help" "$system_prompt" "$messages" "$ITTE_TEMPERATURE" "360" "0"
+      ;;
+    *)
+      echo "Error: unknown response mode '$mode'" >&2
+      return 1
+      ;;
+  esac
+}
+
+fallback_summary_json() {
+  local scene intents_json useful_json try_next
+  scene="$CURRENT_SCENE_HINT"
+  if [[ "$scene" == "General conversation" && "$DAILY_COUNT" -gt 0 ]]; then
+    scene="Daily practice"
+  fi
+
+  intents_json='["sharing opinions"]'
+  if [[ "$HELP_COUNT" -gt 0 && "$OPTIMIZE_COUNT" -gt 0 ]]; then
+    intents_json='["expressing opinions","asking for expression help","improving wording"]'
+  elif [[ "$HELP_COUNT" -gt 0 ]]; then
+    intents_json='["asking for expression help","expressing uncertainty"]'
+  elif [[ "$OPTIMIZE_COUNT" -gt 0 ]]; then
+    intents_json='["improving wording","sharing opinions"]'
+  fi
+
+  useful_json='[
+    "I can see the benefits, but I still feel a little uneasy about it.",
+    "In my experience, the biggest issue is ...",
+    "Could you help me say this more naturally?"
+  ]'
+  try_next="I can see both sides, but I still have some concerns."
+
+  jq -n \
+    --arg scene "$scene" \
+    --arg try_next_time "$try_next" \
+    --argjson intents "$intents_json" \
+    --argjson useful_expressions "$useful_json" \
+    '{
+      scene: $scene,
+      intents: ($intents | .[:3]),
+      useful_expressions: ($useful_expressions | .[:3]),
+      try_next_time: $try_next_time
+    }'
+}
+
+normalize_summary_json() {
+  local raw="$1"
+  local cleaned candidate
+
+  cleaned="$(printf "%s" "$raw" | sed -e '1s/^```json[[:space:]]*//' -e '1s/^```[[:space:]]*//' -e '$s/[[:space:]]*```$//')"
+  candidate="$(trim "$cleaned")"
+
+  if jq -e . >/dev/null 2>&1 <<<"$candidate"; then
+    jq '{
+      scene: (.scene // "General conversation"),
+      intents: ((.intents // []) | map(tostring) | map(select(length > 0)) | .[:3]),
+      useful_expressions: ((.useful_expressions // []) | map(tostring) | map(select(length > 0)) | .[:3]),
+      try_next_time: (.try_next_time // "I can see the benefits, but I still need more practice.")
+    }' <<<"$candidate"
+    return 0
+  fi
+
+  fallback_summary_json
+}
+
+contains_cjk() {
+  local text="$1"
+  if grep -qE '[一-龯ぁ-ゟ゠-ヿ㐀-䶿]' <<<"$text"; then
+    return 0
+  fi
+  return 1
+}
+
+normalize_help_text() {
+  local raw="$1"
+  local cleaned logic_part continue_part
+
+  cleaned="$(printf "%s" "$raw" \
+    | sed -E 's/\*\*([^*]+)\*\*/\1/g' \
+    | sed -E 's/`([^`]+)`/\1/g' \
+    | sed -E 's/\r//g')"
+
+  logic_part="$(
+    awk '
+      BEGIN { sec=0 }
+      {
+        lower=tolower($0)
+        if (lower ~ /^translation logic[[:space:]]*:/) {
+          sec=1
+          sub(/^[^:]*:[[:space:]]*/, "", $0)
+          if (length($0) > 0) print $0
+          next
+        }
+        if (lower ~ /^continue( the)? topic[[:space:]]*:/) {
+          sec=2
+          next
+        }
+        if (sec==1) print $0
+      }
+    ' <<<"$cleaned"
+  )"
+
+  continue_part="$(
+    awk '
+      BEGIN { sec=0 }
+      {
+        lower=tolower($0)
+        if (lower ~ /^continue( the)? topic[[:space:]]*:/) {
+          sec=2
+          sub(/^[^:]*:[[:space:]]*/, "", $0)
+          if (length($0) > 0) print $0
+          next
+        }
+        if (lower ~ /^translation logic[[:space:]]*:/) {
+          sec=1
+          next
+        }
+        if (sec==2) print $0
+      }
+    ' <<<"$cleaned"
+  )"
+
+  logic_part="$(trim "$logic_part")"
+  continue_part="$(trim "$continue_part")"
+
+  # Fallback if labels are missing: split by first blank line.
+  if [[ -z "$logic_part" || -z "$continue_part" ]]; then
+    if [[ "$cleaned" == *$'\n\n'* ]]; then
+      logic_part="$(trim "${cleaned%%$'\n\n'*}")"
+      continue_part="$(trim "${cleaned#*$'\n\n'}")"
+    else
+      logic_part="$(trim "$cleaned")"
+      continue_part=""
+    fi
+  fi
+
+  if [[ -z "$logic_part" ]]; then
+    logic_part="I will keep it simple: first understand your meaning, then choose natural English words, then form one clear sentence."
+  fi
+  if [[ -z "$continue_part" ]]; then
+    continue_part="Thanks for sharing. Can you tell me one more detail so I can help you say it naturally?"
+  fi
+
+  printf "Translation Logic:\n%s\n\nContinue the topic:\n%s" "$logic_part" "$continue_part"
+}
+
+help_continue_body() {
+  local normalized="$1"
+  awk '
+    BEGIN { sec=0 }
+    {
+      lower=tolower($0)
+      if (lower ~ /^continue( the)? topic[[:space:]]*:/) {
+        sec=1
+        next
+      }
+      if (sec==1) print $0
+    }
+  ' <<<"$normalized"
+}
+
+help_logic_body() {
+  local normalized="$1"
+  awk '
+    BEGIN { sec=0 }
+    {
+      lower=tolower($0)
+      if (lower ~ /^translation logic[[:space:]]*:/) {
+        sec=1
+        next
+      }
+      if (lower ~ /^continue( the)? topic[[:space:]]*:/) {
+        sec=2
+        next
+      }
+      if (sec==1) print $0
+    }
+  ' <<<"$normalized"
+}
+
+print_help_output() {
+  local normalized="$1"
+  local logic_body continue_body
+  local green="\033[32m"
+  local reset="\033[0m"
+
+  logic_body="$(trim "$(help_logic_body "$normalized")")"
+  continue_body="$(trim "$(help_continue_body "$normalized")")"
+
+  echo "Translation Logic:"
+  echo "$logic_body"
+  echo
+  echo "Continue the topic:"
+  if [[ -t 1 ]]; then
+    printf "%b%s%b\n" "$green" "$continue_body" "$reset"
+  else
+    echo "$continue_body"
+  fi
+}
+
+generate_summary_json() {
+  local context_json summary_messages raw normalized
+  context_json="$(
+    jq -n \
+      --arg session_id "$SESSION_ID" \
+      --arg started_at "$SESSION_STARTED_AT" \
+      --arg now "$(iso_utc)" \
+      --arg scene_hint "$CURRENT_SCENE_HINT" \
+      --argjson stats "$(session_stats_json)" \
+      --argjson recent_history "$(recent_history_json 24)" \
+      '{
+        session_id: $session_id,
+        started_at: $started_at,
+        now: $now,
+        scene_hint: $scene_hint,
+        stats: $stats,
+        recent_history: $recent_history
+      }'
+  )"
+
+  summary_messages="$(
+    jq -n --arg context "$(jq -c . <<<"$context_json")" '
+      [
+        {
+          role: "user",
+          content: ("Create session summary from this JSON context:\n" + $context)
+        }
+      ]'
+  )"
+
+  call_chat_completion "summary" "$(system_prompt_summary)" "$summary_messages" "$ITTE_TEMPERATURE" "320" "0" || true
+  raw="$MODEL_REPLY"
+  if [[ -z "$raw" ]]; then
+    fallback_summary_json
+    return 0
+  fi
+
+  normalized="$(normalize_summary_json "$raw")"
+  printf "%s" "$normalized"
+}
+
+print_summary() {
+  local summary_json="$1"
+  local scene intents useful try_next i
+  scene="$(jq -r '.scene' <<<"$summary_json")"
+  try_next="$(jq -r '.try_next_time' <<<"$summary_json")"
+
+  echo "Session Summary"
+  echo
+  echo "Scene:"
+  echo "$scene"
+  echo
+  echo "Intent:"
+  intents="$(jq -r '.intents[]?' <<<"$summary_json")"
+  if [[ -n "$intents" ]]; then
+    while IFS= read -r i; do
+      [[ -n "$i" ]] && echo "- $i"
+    done <<<"$intents"
+  else
+    echo "- sharing opinions"
+  fi
+  echo
+  echo "Useful Expressions:"
+  useful="$(jq -r '.useful_expressions[]?' <<<"$summary_json")"
+  if [[ -n "$useful" ]]; then
+    while IFS= read -r i; do
+      [[ -n "$i" ]] && echo "- $i"
+    done <<<"$useful"
+  else
+    echo "- I can see the benefits, but I still have concerns."
+  fi
+  echo
+  echo "Try Next Time:"
+  echo "Try saying:"
+  echo "\"$try_next\""
+}
+
+infer_pref_more_guidance_json() {
+  if (( HELP_COUNT >= 2 || HELP_COUNT > OPTIMIZE_COUNT )); then
+    printf "true"
+  elif (( OPTIMIZE_COUNT >= 2 && HELP_COUNT == 0 )); then
+    printf "false"
+  else
+    printf "null"
+  fi
+}
+
+infer_pref_short_feedback_json() {
+  local avg
+  if (( USER_TURNS > 0 )); then
+    avg=$((TOTAL_USER_CHARS / USER_TURNS))
+  else
+    avg=0
+  fi
+  if (( avg > 0 && avg <= 90 )); then
+    printf "true"
+  elif (( avg >= 200 )); then
+    printf "false"
+  else
+    printf "null"
+  fi
+}
+
+update_profile_preview() {
+  local now pref_more_json pref_short_json tmp_file
+  now="$(iso_utc)"
+  pref_more_json="$(infer_pref_more_guidance_json)"
+  pref_short_json="$(infer_pref_short_feedback_json)"
+  tmp_file="$(mktemp)"
+
+  jq \
+    --arg now "$now" \
+    --argjson pref_more "$pref_more_json" \
+    --argjson pref_short "$pref_short_json" \
+    '
+    .updated_at = $now
+    | .preference_profile.prefers_more_guidance =
+        (if $pref_more == null then .preference_profile.prefers_more_guidance else $pref_more end)
+    | .preference_profile.prefers_short_feedback =
+        (if $pref_short == null then .preference_profile.prefers_short_feedback else $pref_short end)
+    ' "$PROFILE_FILE" > "$tmp_file"
+
+  mv "$tmp_file" "$PROFILE_FILE"
+}
+
+update_profile_final() {
+  local summary_json="$1"
+  local now scene intents_json pref_more_json pref_short_json tmp_file
+  now="$(iso_utc)"
+  scene="$(jq -r '.scene // "General conversation"' <<<"$summary_json")"
+  intents_json="$(jq -c '.intents // []' <<<"$summary_json")"
+  pref_more_json="$(infer_pref_more_guidance_json)"
+  pref_short_json="$(infer_pref_short_feedback_json)"
+  tmp_file="$(mktemp)"
+
+  jq \
+    --arg now "$now" \
+    --arg scene "$scene" \
+    --argjson intents "$intents_json" \
+    --argjson assistant_turns "$ASSISTANT_TURNS" \
+    --argjson optimize "$OPTIMIZE_COUNT" \
+    --argjson help "$HELP_COUNT" \
+    --argjson daily "$DAILY_COUNT" \
+    --argjson pref_more "$pref_more_json" \
+    --argjson pref_short "$pref_short_json" \
+    '
+    .updated_at = $now
+    | .stats.total_sessions += 1
+    | .stats.total_turns += $assistant_turns
+    | .stats.total_optimize_requests += $optimize
+    | .stats.total_help_requests += $help
+    | .stats.total_daily_requests += $daily
+    | .preference_profile.prefers_more_guidance =
+        (if $pref_more == null then .preference_profile.prefers_more_guidance else $pref_more end)
+    | .preference_profile.prefers_short_feedback =
+        (if $pref_short == null then .preference_profile.prefers_short_feedback else $pref_short end)
+    | ._counters.topic_counts[$scene] = ((._counters.topic_counts[$scene] // 0) + 1)
+    | reduce $intents[] as $intent (.;
+        if ($intent | type) == "string" and ($intent | length) > 0 then
+          ._counters.intent_counts[$intent] = ((._counters.intent_counts[$intent] // 0) + 1)
+        else
+          .
+        end
+      )
+    | .language_profile.optimize_usage_pattern.optimize_per_session_avg =
+        (if .stats.total_sessions > 0
+         then ((.stats.total_optimize_requests / .stats.total_sessions) * 100 | round / 100)
+         else 0
+         end)
+    | .preference_profile.preferred_topics =
+        ((._counters.topic_counts // {}) | to_entries | sort_by(-.value) | map(.key)[:5])
+    | .language_profile.frequent_intents =
+        ((._counters.intent_counts // {}) | to_entries | sort_by(-.value) | map(.key)[:8])
+    | .preference_profile.daily_mode_frequency =
+        (if .stats.total_sessions == 0 then "low"
+         else (
+           (.stats.total_daily_requests / .stats.total_sessions) as $ratio
+           | if $ratio >= 0.7 then "high"
+             elif $ratio >= 0.3 then "medium"
+             else "low"
+             end
+         ) end)
+    | .language_profile.estimated_level =
+        (if $help >= 3 then "A2-B1 (needs scaffolding often)"
+         elif $help == 0 and $optimize >= 2 then "B1+ (actively refining)"
+         else .language_profile.estimated_level
+         end)
+    ' "$PROFILE_FILE" > "$tmp_file"
+
+  mv "$tmp_file" "$PROFILE_FILE"
+}
+
+save_summary_record() {
+  local summary_json="$1"
+  local ended_at entry
+  ended_at="$(iso_utc)"
+  entry="$(
+    jq -c -n \
+      --arg session_id "$SESSION_ID" \
+      --arg started_at "$SESSION_STARTED_AT" \
+      --arg ended_at "$ended_at" \
+      --argjson summary "$summary_json" \
+      --argjson stats "$(session_stats_json)" \
+      '{
+        session_id: $session_id,
+        started_at: $started_at,
+        ended_at: $ended_at,
+        summary: $summary,
+        stats: $stats
+      }'
+  )"
+  printf "%s\n" "$entry" >> "$SUMMARIES_FILE"
+}
+
+handle_normal_input() {
+  local text="$1" reply
+  add_user_message "$text"
+  generate_response "normal" || true
+  reply="$MODEL_REPLY"
+  if [[ -z "$reply" ]]; then
+    reply="I am sorry, I hit a temporary issue. Please try again."
+    MODEL_REPLY_STREAMED=0
+  fi
+  add_assistant_message "$reply"
+  if [[ "$MODEL_REPLY_STREAMED" -eq 0 ]]; then
+    echo "$reply"
+  fi
+}
+
+handle_optimize() {
+  local text="$1" reply
+  if [[ -z "$text" ]]; then
+    echo "Usage: /optimize <text>"
+    return 0
+  fi
+  OPTIMIZE_COUNT=$((OPTIMIZE_COUNT + 1))
+  add_user_message "$text"
+  generate_response "optimize" || true
+  reply="$MODEL_REPLY"
+  if [[ -z "$reply" ]]; then
+    reply="I understand you mean this sentence needs polishing. Please try /optimize again with the text."
+    MODEL_REPLY_STREAMED=0
+  fi
+  add_assistant_message "$reply"
+  if [[ "$MODEL_REPLY_STREAMED" -eq 0 ]]; then
+    echo "$reply"
+  fi
+}
+
+handle_help_mode() {
+  local text="$1" reply input_kind
+  if [[ -z "$text" ]]; then
+    echo "Usage: /help <text>"
+    return 0
+  fi
+  input_kind="english"
+  if contains_cjk "$text"; then
+    input_kind="chinese"
+  fi
+
+  HELP_COUNT=$((HELP_COUNT + 1))
+  add_user_message "$text"
+  generate_response "help" "$input_kind" || true
+  reply="$MODEL_REPLY"
+  if [[ -n "$reply" ]]; then
+    reply="$(normalize_help_text "$reply")"
+    MODEL_REPLY="$reply"
+  fi
+  if [[ -z "$reply" ]]; then
+    reply=$'Translation Logic:\nI keep it simple: understand your meaning, choose natural English words, and build one clear sentence.\n\nContinue the topic:\nThanks for sharing. Tell me one more detail, and I will help you say it naturally.'
+    MODEL_REPLY_STREAMED=0
+  fi
+  add_assistant_message "$reply"
+  if [[ "$MODEL_REPLY_STREAMED" -eq 0 ]]; then
+    print_help_output "$reply"
+  fi
+}
+
+handle_daily() {
+  local total index topic title intro prompt scene message
+  total="$(jq 'length' "$TOPICS_FILE")"
+  if [[ -z "$total" || "$total" == "0" ]]; then
+    echo "No daily topics available."
+    return 0
+  fi
+  index=$((RANDOM % total))
+  topic="$(jq -c --argjson idx "$index" '.[$idx]' "$TOPICS_FILE")"
+  title="$(jq -r '.title' <<<"$topic")"
+  intro="$(jq -r '.intro' <<<"$topic")"
+  prompt="$(jq -r '.prompt' <<<"$topic")"
+  scene="$(jq -r '.scene // "Daily practice"' <<<"$topic")"
+
+  CURRENT_SCENE_HINT="$scene"
+  DAILY_COUNT=$((DAILY_COUNT + 1))
+
+  message=$'Today\'s topic: '"$title"$'\n\nRound 1:\n'"$intro"$'\n\n'"$prompt"
+  add_assistant_message "$message"
+  echo "$message"
+}
+
+handle_summary() {
+  local summary_json
+  summary_json="$(generate_summary_json)"
+  LAST_SUMMARY_JSON="$summary_json"
+  CURRENT_SCENE_HINT="$(jq -r '.scene // "General conversation"' <<<"$summary_json")"
+  update_profile_preview
+  print_summary "$summary_json"
+}
+
+handle_logs() {
+  local raw_n="${1:-}"
+  local n=10
+
+  if [[ -n "$raw_n" ]]; then
+    if [[ ! "$raw_n" =~ ^[0-9]+$ ]] || [[ "$raw_n" == "0" ]]; then
+      echo "Usage: /logs [n]  (n must be a positive integer)"
+      return 0
+    fi
+    n="$raw_n"
+  fi
+
+  if [[ ! -s "$RUN_LOG_FILE" ]]; then
+    echo "No run logs yet."
+    return 0
+  fi
+
+  echo "Recent run logs (latest ${n})"
+  tail -n "$n" "$RUN_LOG_FILE" | jq -r '
+    "[" + (.logged_at // "-") + "] "
+    + "mode=" + (.mode // "-")
+    + " req=" + (.request_id // "-")
+    + " stream=" + ((.stream // false) | tostring)
+    + " http=" + (.http_code // "-")
+    + " latency=" + ((.latency_ms // 0) | tostring) + "ms"
+    + " tokens=" + ((.tokens.total // "-") | tostring)
+    + " error=" + (.error // "-")
+  '
+}
+
+handle_end() {
+  local summary_json
+  summary_json="$(generate_summary_json)"
+  LAST_SUMMARY_JSON="$summary_json"
+  CURRENT_SCENE_HINT="$(jq -r '.scene // "General conversation"' <<<"$summary_json")"
+
+  update_profile_final "$summary_json"
+  save_summary_record "$summary_json"
+
+  echo "Session ended."
+  echo
+  print_summary "$summary_json"
+
+  rm -f "$SESSION_FILE"
+}
+
+main_loop() {
+  local input raw_input rest embedded_cmd
+  while true; do
+    if ! read_input_line; then
+      echo
+      break
+    fi
+    raw_input="$READ_INPUT_LINE_VALUE"
+    input="$raw_input"
+
+    input="$(trim "$input")"
+    [[ -z "$input" ]] && continue
+    add_input_history "$raw_input"
+
+    embedded_cmd="$(extract_embedded_command_token "$input")"
+    if [[ -n "$embedded_cmd" ]]; then
+      rest="$(trim "$(strip_first_command_token "$input" "$embedded_cmd")")"
+      case "$embedded_cmd" in
+        /optimize)
+          handle_optimize "$rest"
+          ;;
+        /help)
+          handle_help_mode "$rest"
+          ;;
+        /daily)
+          handle_daily
+          ;;
+        /logs)
+          handle_logs "$rest"
+          ;;
+        /commands)
+          print_commands
+          ;;
+      esac
+
+      write_current_session
+      echo
+      continue
+    fi
+
+    case "$input" in
+      /*)
+        echo "Unknown command. Use /commands to see available commands."
+        ;;
+      *)
+        handle_normal_input "$input"
+        ;;
+    esac
+
+    write_current_session
+    echo
+  done
+}
+
+main() {
+  case "${1:-}" in
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    --version|-v)
+      echo "itte ${VERSION}"
+      exit 0
+      ;;
+    --install)
+      install_to_user_bin
+      exit 0
+      ;;
+    --uninstall)
+      uninstall_from_user_bin
+      exit 0
+      ;;
+    "")
+      ;;
+    *)
+      echo "Unknown flag: $1"
+      print_usage
+      exit 1
+      ;;
+  esac
+
+  require_bin "curl"
+  require_bin "jq"
+
+  load_dotenv_if_exists
+  ensure_data_files
+  validate_env
+  init_session
+  write_current_session
+  print_welcome
+  echo
+  main_loop
+}
+
+main "$@"
