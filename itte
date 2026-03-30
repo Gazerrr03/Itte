@@ -23,6 +23,7 @@ SUMMARIES_FILE="${DATA_DIR}/summaries.jsonl"
 TOPICS_FILE="${DATA_DIR}/daily_topics.json"
 SESSION_FILE="${DATA_DIR}/current_session.json"
 RUN_LOG_FILE="${DATA_DIR}/run_logs.jsonl"
+SETTINGS_FILE="${DATA_DIR}/settings.json"
 
 HISTORY_JSON='[]'
 LAST_SUMMARY_JSON=""
@@ -53,6 +54,9 @@ ITTE_TEMPERATURE="${ITTE_TEMPERATURE:-1}"
 ITTE_STREAM="${ITTE_STREAM:-1}"
 ITTE_COLOR_COMMANDS="${ITTE_COLOR_COMMANDS:-1}"
 ITTE_SHOW_THINKING="${ITTE_SHOW_THINKING:-1}"
+ITTE_COMMAND_COLOR="${ITTE_COMMAND_COLOR:-}"
+ITTE_TOPIC_COLOR="${ITTE_TOPIC_COLOR:-}"
+ITTE_BILINGUAL_ASSIST="${ITTE_BILINGUAL_ASSIST:-}"
 API_URL=""
 
 iso_utc() {
@@ -70,6 +74,114 @@ new_request_id() {
 trim() {
   local input="${1:-}"
   printf "%s" "$input" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+default_command_color() {
+  printf "purple"
+}
+
+default_topic_color() {
+  printf "green"
+}
+
+default_bilingual_assist() {
+  printf "0"
+}
+
+is_valid_color_name() {
+  local name="$1"
+  case "$name" in
+    default|purple|green|cyan|yellow|blue|red|gray)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ansi_for_color_name() {
+  local name="$1"
+  case "$name" in
+    purple) printf "\033[38;5;183m" ;;
+    green) printf "\033[32m" ;;
+    cyan) printf "\033[36m" ;;
+    yellow) printf "\033[33m" ;;
+    blue) printf "\033[34m" ;;
+    red) printf "\033[31m" ;;
+    gray) printf "\033[90m" ;;
+    *) printf "" ;;
+  esac
+}
+
+settings_bilingual_json() {
+  if [[ "$ITTE_BILINGUAL_ASSIST" == "1" ]]; then
+    printf "true"
+  else
+    printf "false"
+  fi
+}
+
+save_settings() {
+  jq -n \
+    --arg command_color "$ITTE_COMMAND_COLOR" \
+    --arg topic_color "$ITTE_TOPIC_COLOR" \
+    --argjson bilingual_assist "$(settings_bilingual_json)" \
+    '{
+      command_color: $command_color,
+      topic_color: $topic_color,
+      bilingual_assist: $bilingual_assist
+    }' > "$SETTINGS_FILE"
+}
+
+load_settings() {
+  local file_command_color file_topic_color file_bilingual
+
+  if [[ ! -f "$SETTINGS_FILE" ]]; then
+    ITTE_COMMAND_COLOR="${ITTE_COMMAND_COLOR:-$(default_command_color)}"
+    ITTE_TOPIC_COLOR="${ITTE_TOPIC_COLOR:-$(default_topic_color)}"
+    ITTE_BILINGUAL_ASSIST="${ITTE_BILINGUAL_ASSIST:-$(default_bilingual_assist)}"
+    save_settings
+    return 0
+  fi
+
+  file_command_color="$(jq -r '.command_color // empty' "$SETTINGS_FILE" 2>/dev/null || true)"
+  file_topic_color="$(jq -r '.topic_color // empty' "$SETTINGS_FILE" 2>/dev/null || true)"
+  file_bilingual="$(jq -r '.bilingual_assist // empty' "$SETTINGS_FILE" 2>/dev/null || true)"
+
+  if [[ -z "$ITTE_COMMAND_COLOR" ]]; then
+    if is_valid_color_name "$file_command_color"; then
+      ITTE_COMMAND_COLOR="$file_command_color"
+    else
+      ITTE_COMMAND_COLOR="$(default_command_color)"
+    fi
+  fi
+
+  if [[ -z "$ITTE_TOPIC_COLOR" ]]; then
+    if is_valid_color_name "$file_topic_color"; then
+      ITTE_TOPIC_COLOR="$file_topic_color"
+    else
+      ITTE_TOPIC_COLOR="$(default_topic_color)"
+    fi
+  fi
+
+  if [[ -z "$ITTE_BILINGUAL_ASSIST" ]]; then
+    case "$file_bilingual" in
+      true|1) ITTE_BILINGUAL_ASSIST="1" ;;
+      false|0) ITTE_BILINGUAL_ASSIST="0" ;;
+      *) ITTE_BILINGUAL_ASSIST="$(default_bilingual_assist)" ;;
+    esac
+  fi
+
+  if ! is_valid_color_name "$ITTE_COMMAND_COLOR"; then
+    ITTE_COMMAND_COLOR="$(default_command_color)"
+  fi
+  if ! is_valid_color_name "$ITTE_TOPIC_COLOR"; then
+    ITTE_TOPIC_COLOR="$(default_topic_color)"
+  fi
+  if [[ ! "$ITTE_BILINGUAL_ASSIST" =~ ^(0|1)$ ]]; then
+    ITTE_BILINGUAL_ASSIST="$(default_bilingual_assist)"
+  fi
 }
 
 append_run_log() {
@@ -121,7 +233,7 @@ append_run_log() {
 is_known_slash_command() {
   local token="$1"
   case "$token" in
-    /optimize|/help|/daily|/commands|/logs)
+    /optimize|/help|/daily|/commands|/logs|/setting)
       return 0
       ;;
     *)
@@ -135,7 +247,7 @@ extract_embedded_command_token() {
   awk '
     {
       for (i = 1; i <= NF; i++) {
-        if ($i == "/optimize" || $i == "/help" || $i == "/daily" || $i == "/commands" || $i == "/logs") {
+        if ($i == "/optimize" || $i == "/help" || $i == "/daily" || $i == "/commands" || $i == "/logs" || $i == "/setting") {
           print $i
           exit
         }
@@ -232,7 +344,7 @@ history_next_line() {
 
 render_input_preview() {
   local line="$1"
-  local light_purple="\033[38;5;183m"
+  local command_color_code=""
   local reset="\033[0m"
   local cols text_len rows i
   local prefix suffix matched lead cmd trail
@@ -270,14 +382,20 @@ render_input_preview() {
   fi
   printf "\r"
 
-  if [[ "$line" =~ (^|[[:space:]])(/optimize|/help|/daily|/commands|/logs)([[:space:]]|$) ]]; then
+  command_color_code="$(ansi_for_color_name "$ITTE_COMMAND_COLOR")"
+
+  if [[ "$line" =~ (^|[[:space:]])(/optimize|/help|/daily|/commands|/logs|/setting)([[:space:]]|$) ]]; then
     matched="${BASH_REMATCH[0]}"
     lead="${BASH_REMATCH[1]}"
     cmd="${BASH_REMATCH[2]}"
     trail="${BASH_REMATCH[3]}"
     prefix="${line%%"$matched"*}"
     suffix="${line#*"$matched"}"
-    printf "\r\033[2K> %s%s%b%s%b%s%s" "$prefix" "$lead" "$light_purple" "$cmd" "$reset" "$trail" "$suffix"
+    if [[ -n "$command_color_code" ]]; then
+      printf "\r\033[2K> %s%s%b%s%b%s%s" "$prefix" "$lead" "$command_color_code" "$cmd" "$reset" "$trail" "$suffix"
+    else
+      printf "\r\033[2K> %s%s%s%s%s" "$prefix" "$lead" "$cmd" "$trail" "$suffix"
+    fi
   else
     printf "\r\033[2K> %s" "$line"
   fi
@@ -393,6 +511,7 @@ Commands in session:
   /help <text>       Scaffold a sentence when you get stuck
   /daily             Start one guided daily round
   /logs [n]          Show latest structured run logs
+  /setting           Open interactive settings
   /commands          Show command list
 EOF
 }
@@ -484,6 +603,7 @@ If you need support:
   /help <text>
   /daily
   /logs [n]
+  /setting
 
 ---------------
 
@@ -497,6 +617,7 @@ print_commands() {
 /help <text>       -> scaffold expression step-by-step
 /daily             -> start one daily guided round
 /logs [n]          -> show latest structured run logs
+/setting           -> open interactive settings
 EOF
 }
 
@@ -566,6 +687,18 @@ EOF
   if [[ ! -f "$RUN_LOG_FILE" ]]; then
     : > "$RUN_LOG_FILE"
   fi
+
+  if [[ ! -f "$SETTINGS_FILE" ]]; then
+    jq -n \
+      --arg command_color "$(default_command_color)" \
+      --arg topic_color "$(default_topic_color)" \
+      --argjson bilingual_assist false \
+      '{
+        command_color: $command_color,
+        topic_color: $topic_color,
+        bilingual_assist: $bilingual_assist
+      }' > "$SETTINGS_FILE"
+  fi
 }
 
 validate_env() {
@@ -612,6 +745,21 @@ EOF
 
   if [[ ! "$ITTE_SHOW_THINKING" =~ ^(0|1)$ ]]; then
     echo "Configuration error: ITTE_SHOW_THINKING must be 0 or 1."
+    exit 1
+  fi
+
+  if ! is_valid_color_name "$ITTE_COMMAND_COLOR"; then
+    echo "Configuration error: ITTE_COMMAND_COLOR must be one of: default, purple, green, cyan, yellow, blue, red, gray."
+    exit 1
+  fi
+
+  if ! is_valid_color_name "$ITTE_TOPIC_COLOR"; then
+    echo "Configuration error: ITTE_TOPIC_COLOR must be one of: default, purple, green, cyan, yellow, blue, red, gray."
+    exit 1
+  fi
+
+  if [[ ! "$ITTE_BILINGUAL_ASSIST" =~ ^(0|1)$ ]]; then
+    echo "Configuration error: ITTE_BILINGUAL_ASSIST must be 0 or 1."
     exit 1
   fi
 
@@ -982,6 +1130,22 @@ call_chat_completion() {
   return 1
 }
 
+bilingual_output_instruction() {
+  if [[ "$ITTE_BILINGUAL_ASSIST" == "1" ]]; then
+    cat <<'EOF'
+
+When bilingual assist is ON, format your final answer exactly like:
+English:
+<your English reply>
+
+Chinese:
+<a concise and learner-friendly Chinese version>
+
+Keep English first, then Chinese.
+EOF
+  fi
+}
+
 system_prompt_normal() {
   cat <<'EOF'
 You are Itte, an English speaking practice companion.
@@ -1006,6 +1170,7 @@ You should internally handle:
 - S3 ambiguous meaning -> minimal clarification
 - S4 expression breakdown -> scaffold and continue
 EOF
+  bilingual_output_instruction
 }
 
 system_prompt_optimize() {
@@ -1025,6 +1190,7 @@ Rules:
 - No long grammar lecture.
 - Preserve original meaning.
 EOF
+  bilingual_output_instruction
 }
 
 system_prompt_help_mode() {
@@ -1045,6 +1211,10 @@ Global rules:
 - Keep wording simple enough for a 5-year-old learner.
 - Be warm, practical, and non-judgmental.
 - In "Continue the topic", keep the conversation moving with one follow-up question.
+
+If bilingual assist is ON, then in EACH section use this order:
+English: <...>
+Chinese: <...>
 EOF
 
   if [[ "$input_kind" == "chinese" ]]; then
@@ -1291,21 +1461,263 @@ help_logic_body() {
 print_help_output() {
   local normalized="$1"
   local logic_body continue_body
-  local green="\033[32m"
+  local topic_color_code
   local reset="\033[0m"
 
   logic_body="$(trim "$(help_logic_body "$normalized")")"
   continue_body="$(trim "$(help_continue_body "$normalized")")"
+  topic_color_code="$(ansi_for_color_name "$ITTE_TOPIC_COLOR")"
 
   echo "Translation Logic:"
   echo "$logic_body"
   echo
   echo "Continue the topic:"
   if [[ -t 1 ]]; then
-    printf "%b%s%b\n" "$green" "$continue_body" "$reset"
+    if [[ -n "$topic_color_code" ]]; then
+      printf "%b%s%b\n" "$topic_color_code" "$continue_body" "$reset"
+    else
+      echo "$continue_body"
+    fi
   else
     echo "$continue_body"
   fi
+}
+
+menu_read_key() {
+  local ch esc1 esc2
+  if ! IFS= read -rsn1 ch; then
+    printf "quit"
+    return 0
+  fi
+  if [[ -z "$ch" || "$ch" == $'\n' || "$ch" == $'\r' ]]; then
+    printf "enter"
+    return 0
+  fi
+  case "$ch" in
+    q|Q) printf "quit" ;;
+    $'\033')
+      IFS= read -rsn1 esc1 || true
+      if [[ "$esc1" == "[" ]]; then
+        IFS= read -rsn1 esc2 || true
+        case "$esc2" in
+          A) printf "up" ;;
+          B) printf "down" ;;
+          *) printf "other" ;;
+        esac
+      else
+        printf "other"
+      fi
+      ;;
+    *)
+      printf "other"
+      ;;
+  esac
+}
+
+draw_settings_header() {
+  local title="$1"
+  printf "\033[2J\033[H"
+  echo "Settings"
+  echo "--------"
+  echo "$title"
+  echo
+}
+
+settings_bool_label() {
+  if [[ "$1" == "1" ]]; then
+    printf "On"
+  else
+    printf "Off"
+  fi
+}
+
+settings_color_index() {
+  local current="$1"
+  local -a colors=("default" "purple" "green" "cyan" "yellow" "blue" "red" "gray")
+  local i
+  for i in "${!colors[@]}"; do
+    if [[ "${colors[$i]}" == "$current" ]]; then
+      printf "%s" "$i"
+      return 0
+    fi
+  done
+  printf "0"
+}
+
+settings_saved_notice() {
+  echo
+  echo "Saved."
+  sleep 0.4
+}
+
+settings_pick_color_menu() {
+  local target="$1"
+  local title="$2"
+  local current="$3"
+  local -a colors=("default" "purple" "green" "cyan" "yellow" "blue" "red" "gray")
+  local idx key i item ansi reset
+
+  idx="$(settings_color_index "$current")"
+  reset="\033[0m"
+
+  while true; do
+    draw_settings_header "$title (Enter to save, q to go back)"
+    for i in "${!colors[@]}"; do
+      item="${colors[$i]}"
+      if [[ "$i" -eq "$idx" ]]; then
+        printf "> "
+      else
+        printf "  "
+      fi
+      ansi="$(ansi_for_color_name "$item")"
+      if [[ -n "$ansi" ]]; then
+        printf "%-8s %bPreview sample%b\n" "$item" "$ansi" "$reset"
+      else
+        printf "%-8s Preview sample\n" "$item"
+      fi
+    done
+
+    key="$(menu_read_key)"
+    case "$key" in
+      up)
+        idx=$((idx - 1))
+        if (( idx < 0 )); then
+          idx=$((${#colors[@]} - 1))
+        fi
+        ;;
+      down)
+        idx=$((idx + 1))
+        if (( idx >= ${#colors[@]} )); then
+          idx=0
+        fi
+        ;;
+      enter)
+        if [[ "$target" == "command" ]]; then
+          ITTE_COMMAND_COLOR="${colors[$idx]}"
+        else
+          ITTE_TOPIC_COLOR="${colors[$idx]}"
+        fi
+        save_settings
+        settings_saved_notice
+        return 0
+        ;;
+      quit)
+        return 0
+        ;;
+    esac
+  done
+}
+
+settings_toggle_bilingual_menu() {
+  local idx key
+  local -a labels=("Off" "On")
+
+  if [[ "$ITTE_BILINGUAL_ASSIST" == "1" ]]; then
+    idx=1
+  else
+    idx=0
+  fi
+
+  while true; do
+    draw_settings_header "Chinese Assist (Enter to save, q to go back)"
+    echo "When enabled: model replies include English first, then Chinese."
+    echo
+    for i in "${!labels[@]}"; do
+      if [[ "$i" -eq "$idx" ]]; then
+        printf "> %s\n" "${labels[$i]}"
+      else
+        printf "  %s\n" "${labels[$i]}"
+      fi
+    done
+
+    key="$(menu_read_key)"
+    case "$key" in
+      up|down)
+        if [[ "$idx" -eq 0 ]]; then idx=1; else idx=0; fi
+        ;;
+      enter)
+        if [[ "$idx" -eq 1 ]]; then
+          ITTE_BILINGUAL_ASSIST="1"
+        else
+          ITTE_BILINGUAL_ASSIST="0"
+        fi
+        save_settings
+        settings_saved_notice
+        return 0
+        ;;
+      quit)
+        return 0
+        ;;
+    esac
+  done
+}
+
+settings_menu_loop() {
+  local idx=0 key
+  local -a items=("Command Color" "Topic Color" "Chinese Assist" "Back")
+
+  while true; do
+    draw_settings_header "Use Up/Down + Enter. Press q to exit."
+    printf "Current settings:\n"
+    printf "  command_color: %s\n" "$ITTE_COMMAND_COLOR"
+    printf "  topic_color: %s\n" "$ITTE_TOPIC_COLOR"
+    printf "  bilingual_assist: %s\n\n" "$(settings_bool_label "$ITTE_BILINGUAL_ASSIST")"
+
+    for i in "${!items[@]}"; do
+      if [[ "$i" -eq "$idx" ]]; then
+        printf "> %s" "${items[$i]}"
+      else
+        printf "  %s" "${items[$i]}"
+      fi
+
+      case "$i" in
+        0) printf "  (%s)\n" "$ITTE_COMMAND_COLOR" ;;
+        1) printf "  (%s)\n" "$ITTE_TOPIC_COLOR" ;;
+        2) printf "  (%s)\n" "$(settings_bool_label "$ITTE_BILINGUAL_ASSIST")" ;;
+        *) printf "\n" ;;
+      esac
+    done
+
+    key="$(menu_read_key)"
+    case "$key" in
+      up)
+        idx=$((idx - 1))
+        if (( idx < 0 )); then
+          idx=$((${#items[@]} - 1))
+        fi
+        ;;
+      down)
+        idx=$((idx + 1))
+        if (( idx >= ${#items[@]} )); then
+          idx=0
+        fi
+        ;;
+      enter)
+        case "$idx" in
+          0) settings_pick_color_menu "command" "Command Color" "$ITTE_COMMAND_COLOR" ;;
+          1) settings_pick_color_menu "topic" "Topic Color" "$ITTE_TOPIC_COLOR" ;;
+          2) settings_toggle_bilingual_menu ;;
+          3) printf "\033[2J\033[H"; return 0 ;;
+        esac
+        ;;
+      quit)
+        printf "\033[2J\033[H"
+        return 0
+        ;;
+    esac
+  done
+}
+
+handle_setting() {
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "Settings (read-only in non-interactive mode):"
+    echo "  command_color: $ITTE_COMMAND_COLOR"
+    echo "  topic_color: $ITTE_TOPIC_COLOR"
+    echo "  bilingual_assist: $(settings_bool_label "$ITTE_BILINGUAL_ASSIST")"
+    echo "Tip: run /setting in an interactive terminal to modify settings."
+    return 0
+  fi
+  settings_menu_loop
 }
 
 generate_summary_json() {
@@ -1693,6 +2105,9 @@ main_loop() {
         /logs)
           handle_logs "$rest"
           ;;
+        /setting)
+          handle_setting
+          ;;
         /commands)
           print_commands
           ;;
@@ -1749,6 +2164,7 @@ main() {
 
   load_dotenv_if_exists
   ensure_data_files
+  load_settings
   validate_env
   init_session
   write_current_session

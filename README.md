@@ -36,8 +36,13 @@ cp .env.example .env
 - `ITTE_MODEL`
 - `ITTE_TEMPERATURE` (optional, default is `1`)
 - `ITTE_STREAM` (optional, `1` for token streaming, `0` to disable; default `1`)
-- `ITTE_COLOR_COMMANDS` (optional, `1` to color `/...` commands in light purple; default `1`)
+- `ITTE_COLOR_COMMANDS` (optional, `1` to color `/...` commands; default `1`)
 - `ITTE_SHOW_THINKING` (optional, `1` to print `thinking...` while waiting for model output; default `1`)
+- `ITTE_COMMAND_COLOR` (optional, command highlight color; default `purple`)
+- `ITTE_TOPIC_COLOR` (optional, `/help` topic section color; default `green`)
+- `ITTE_BILINGUAL_ASSIST` (optional, `1` for English+Chinese model replies; default `0`)
+
+Tip: if you want `/setting` to control these values persistently, keep the three `ITTE_*` setting overrides unset in `.env`.
 
 3) Make script executable:
 
@@ -70,6 +75,7 @@ itte
 /help <text>       -> explain translation/expression logic, then continue topic
 /daily             -> start one daily guided round
 /logs [n]          -> show latest structured run logs
+/setting           -> open interactive settings
 /commands          -> show command list
 ```
 
@@ -86,9 +92,10 @@ Notes:
 
 - `/optimize` and `/help` must include text.
 - `/help` output has two sections: `Translation Logic` and `Continue the topic`.
+- `/setting` opens an interactive settings UI (colors + bilingual assist).
 - Exit session with `Ctrl+D` in terminal.
 - Default output language is English.
-- Chinese explanation is only used when user explicitly asks.
+- When bilingual assist is on, model replies are English first, then Chinese.
 
 ## Data storage
 
@@ -103,6 +110,7 @@ Files:
 - `profile.json`: language/profile memory (structured, lightweight)
 - `summaries.jsonl`: one summary record per ended session
 - `run_logs.jsonl`: structured model call logs (`request_id`, `mode`, `latency`, `error`, `tokens`)
+- `settings.json`: persistent settings used by `/setting`
 - `daily_topics.json`: daily topic source (copied from repo on first run)
 - `current_session.json`: temporary state for current session
 
