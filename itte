@@ -403,8 +403,24 @@ render_input_preview() {
   PREVIEW_ROWS="$rows"
 }
 
+read_escape_sequence_tail() {
+  local seq="" ch
+  local i
+  # Read up to 8 bytes after ESC and stop at CSI terminator.
+  for i in 1 2 3 4 5 6 7 8; do
+    if ! IFS= read -rsn1 -t 1 ch; then
+      break
+    fi
+    seq+="$ch"
+    if [[ "$ch" =~ [A-Za-z~]$ ]]; then
+      break
+    fi
+  done
+  printf "%s" "$seq"
+}
+
 read_input_line() {
-  local line="" ch esc_1 esc_2
+  local line="" ch esc_seq
   READ_INPUT_LINE_VALUE=""
   INPUT_HISTORY_POS="${#INPUT_HISTORY[@]}"
   INPUT_HISTORY_STASH=""
@@ -452,19 +468,16 @@ read_input_line() {
         line=""
         ;;
       $'\033')
-        # Handle common ANSI escape sequences, including history navigation.
-        IFS= read -rsn1 esc_1 || true
-        if [[ "$esc_1" == "[" ]]; then
-          IFS= read -rsn1 esc_2 || true
-          case "$esc_2" in
-            A)
-              line="$(history_prev_line "$line")"
-              ;;
-            B)
-              line="$(history_next_line "$line")"
-              ;;
-          esac
-        fi
+        # Drain full escape sequence to avoid leaving trailing bytes in input buffer.
+        esc_seq="$(read_escape_sequence_tail)"
+        case "$esc_seq" in
+          *A)
+            line="$(history_prev_line "$line")"
+            ;;
+          *B)
+            line="$(history_next_line "$line")"
+            ;;
+        esac
         ;;
       *)
         line+="$ch"
@@ -1484,7 +1497,7 @@ print_help_output() {
 }
 
 menu_read_key() {
-  local ch esc1 esc2
+  local ch esc_seq
   if ! IFS= read -rsn1 ch; then
     printf "quit"
     return 0
@@ -1496,17 +1509,13 @@ menu_read_key() {
   case "$ch" in
     q|Q) printf "quit" ;;
     $'\033')
-      IFS= read -rsn1 esc1 || true
-      if [[ "$esc1" == "[" ]]; then
-        IFS= read -rsn1 esc2 || true
-        case "$esc2" in
-          A) printf "up" ;;
-          B) printf "down" ;;
-          *) printf "other" ;;
-        esac
-      else
-        printf "other"
-      fi
+      # Drain full escape sequence so one keypress maps to one menu action.
+      esc_seq="$(read_escape_sequence_tail)"
+      case "$esc_seq" in
+        *A) printf "up" ;;
+        *B) printf "down" ;;
+        *) printf "other" ;;
+      esac
       ;;
     *)
       printf "other"
