@@ -37,7 +37,8 @@ export function AssistantBubble({ message, translation, onToggleTranslation, onR
       : formatted.sections.length > 0
         ? formatted.sections.map((section) => ({
             content: section.content,
-            variant: section.key === "dialogue" ? ("main" as const) : ("mono" as const),
+            variant:
+              section.key === "dialogue" || section.key === "continue_topic" ? ("main" as const) : ("mono" as const),
           }))
         : [{ content: formatted.display, variant: "mono" as const }];
 
