@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
+import { Languages, Square, Volume2 } from "lucide-react";
 
-import { MaterialIcon } from "@/components/material-icon";
 import { formatAssistantText } from "@/lib/assistant-format";
 import { ChatMessage, MessageTranslationState } from "@/types/chat";
 
@@ -29,15 +29,24 @@ export function AssistantBubble({ message, translation, onToggleTranslation, onR
 
   const formatted = formatAssistantText(rawContent);
   const blocks =
-    formatted.sections.length > 0
-      ? formatted.sections.map((section) => ({ content: section.content, variant: section.variant }))
-      : [{ content: formatted.display, variant: "main" as const }];
+    message.blocks && message.blocks.length > 0
+      ? message.blocks.map((block) => ({
+          content: block.text,
+          variant: block.role === "dialogue" ? ("main" as const) : ("mono" as const),
+        }))
+      : formatted.sections.length > 0
+        ? formatted.sections.map((section) => ({
+            content: section.content,
+            variant: section.key === "dialogue" ? ("main" as const) : ("mono" as const),
+          }))
+        : [{ content: formatted.display, variant: "mono" as const }];
 
   const mainClass =
     tone === "standard"
       ? "max-w-3xl whitespace-pre-wrap text-2xl leading-tight font-semibold tracking-tight text-primary md:text-3xl"
       : "max-w-3xl whitespace-pre-wrap text-3xl leading-tight font-bold tracking-tight text-primary md:text-4xl";
-  const monoClass = "max-w-3xl whitespace-pre-wrap font-mono text-[15px] leading-7 text-primary/78 md:text-base";
+  const monoClass = "max-w-3xl whitespace-pre-wrap font-mono text-[15px] leading-5 text-outline/60 md:text-base";
+  const compactExplanationText = (content: string) => content.replace(/\n{2,}/g, "\n");
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -80,6 +89,13 @@ export function AssistantBubble({ message, translation, onToggleTranslation, onR
     : translation?.text && translation.expanded
       ? "Hide Translation"
       : "Translate";
+  const translationBlocks =
+    translation?.sections && translation.sections.length > 0
+      ? translation.sections
+      : translation?.text
+        ? [{ key: "continue_topic" as const, content: translation.text }]
+        : [];
+  const isPrimarySection = (key: string) => key === "dialogue" || key === "continue_topic";
 
   return (
     <div className="group flex flex-col gap-6">
@@ -95,7 +111,7 @@ export function AssistantBubble({ message, translation, onToggleTranslation, onR
         <div className="flex flex-col gap-7" onClick={handleContentTap} role="presentation">
           {blocks.map((block, index) => (
             <div key={`${message.id}-${index}`} className={block.variant === "mono" ? monoClass : mainClass}>
-              {block.content}
+              {block.variant === "mono" ? compactExplanationText(block.content) : block.content}
             </div>
           ))}
         </div>
@@ -120,10 +136,10 @@ export function AssistantBubble({ message, translation, onToggleTranslation, onR
                 onClick={() => {
                   void onToggleTranslation();
                 }}
+                title={translateLabel}
                 type="button"
               >
-                <MaterialIcon className="text-[13px]" name="translate" />
-                {translateLabel}
+                <Languages className="h-3.5 w-3.5" />
               </button>
 
               <button
@@ -135,10 +151,10 @@ export function AssistantBubble({ message, translation, onToggleTranslation, onR
                 onClick={() => {
                   void onReadAloud();
                 }}
+                title={isReading ? "Stop" : "Replay"}
                 type="button"
               >
-                <MaterialIcon className="text-[13px]" name="volume_up" />
-                {isReading ? "Stop" : "Replay"}
+                {isReading ? <Square className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
               </button>
             </div>
           </div>
@@ -149,11 +165,22 @@ export function AssistantBubble({ message, translation, onToggleTranslation, onR
 
           {translation?.text && translation.expanded ? (
             <div
-              className="mt-4 whitespace-pre-wrap border-l-2 border-outline/10 py-1 pl-4 text-sm leading-relaxed font-light text-primary/72"
+              className="mt-4 flex flex-col gap-4 border-l-2 border-outline/10 py-1 pl-4 text-sm leading-relaxed"
               onClick={(event) => event.stopPropagation()}
               role="presentation"
             >
-              {translation.text}
+              {translationBlocks.map((block, index) => (
+                <div
+                  key={`${message.id}-translation-${index}`}
+                  className={`whitespace-pre-wrap ${
+                    isPrimarySection(block.key)
+                      ? "font-semibold leading-relaxed text-primary/72"
+                      : "font-light leading-5 text-outline/60"
+                  }`}
+                >
+                  {isPrimarySection(block.key) ? block.content : compactExplanationText(block.content)}
+                </div>
+              ))}
             </div>
           ) : null}
         </div>

@@ -21,7 +21,8 @@ import {
   streamMessage,
   translateAssistantMessage,
 } from "@/lib/web-api";
-import { formatAssistantText } from "@/lib/assistant-format";
+import { getDialogueTextFromBlocks } from "@/lib/assistant-output-spec";
+import { formatAssistantText, getAssistantReadAloudText } from "@/lib/assistant-format";
 import { getTTSManager, type TTSManagerState } from "@/lib/tts/manager";
 import type { ChatMessage, MessageTranslationState, SessionListItem, ToolAction, WebSetting } from "@/types/chat";
 
@@ -99,6 +100,14 @@ function hydrateMessages(messages: ChatMessage[]) {
     }
 
     const rawContent = message.rawContent ?? message.content;
+    if (message.blocks && message.blocks.length > 0) {
+      return {
+        ...message,
+        rawContent,
+        content: rawContent,
+      };
+    }
+
     const formatted = formatAssistantText(rawContent);
     return {
       ...message,
@@ -398,10 +407,16 @@ export default function Home() {
         latestAssistant &&
         latestAssistant.id !== lastAutoReadMessageIdRef.current
       ) {
-        lastAutoReadMessageIdRef.current = latestAssistant.id;
-        await ttsManager.speak(latestAssistant.rawContent ?? latestAssistant.content, {
-          messageId: latestAssistant.id,
-        });
+        const hasStructuredBlocks = Array.isArray(latestAssistant.blocks) && latestAssistant.blocks.length > 0;
+        const readAloudText = hasStructuredBlocks
+          ? getDialogueTextFromBlocks(latestAssistant.blocks)
+          : getAssistantReadAloudText(latestAssistant.rawContent ?? latestAssistant.content);
+        if (readAloudText) {
+          lastAutoReadMessageIdRef.current = latestAssistant.id;
+          await ttsManager.speak(readAloudText, {
+            messageId: latestAssistant.id,
+          });
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Message failed.";
@@ -594,6 +609,7 @@ export default function Home() {
       ...previous,
       [key]: {
         text: null,
+        sections: [],
         expanded: true,
         loading: true,
         error: null,
@@ -606,6 +622,7 @@ export default function Home() {
         ...previous,
         [key]: {
           text: result.translation,
+          sections: result.sections,
           expanded: true,
           loading: false,
           error: null,
@@ -617,6 +634,7 @@ export default function Home() {
         ...previous,
         [key]: {
           text: null,
+          sections: [],
           expanded: false,
           loading: false,
           error: message,

@@ -1,4 +1,6 @@
 import { ChatMessage } from "@/types/chat";
+import { getDialogueTextFromBlocks } from "@/lib/assistant-output-spec";
+import { getAssistantReadAloudText } from "@/lib/assistant-format";
 
 import { createTTSProvider, isTTSCancelledError, type TTSEngine, type TTSProvider } from "./providers";
 
@@ -80,18 +82,21 @@ export class TTSManager {
       if (message.role !== "assistant") {
         continue;
       }
-      const raw = (message.rawContent ?? message.content).trim();
-      if (!raw) {
+      const hasStructuredBlocks = Array.isArray(message.blocks) && message.blocks.length > 0;
+      const speechText = hasStructuredBlocks
+        ? getDialogueTextFromBlocks(message.blocks)
+        : getAssistantReadAloudText(message.rawContent ?? message.content);
+      if (!speechText) {
         continue;
       }
-      this.messageCache.set(message.id, raw);
+      this.messageCache.set(message.id, speechText);
     }
   }
 
   async replay(messageId: string) {
     const text = this.messageCache.get(messageId);
     if (!text) {
-      this.updateState({ lastError: "Message text is not available for replay." });
+      this.updateState({ lastError: "No highlighted chat output is available for replay." });
       return false;
     }
     return this.speak(text, { messageId });
