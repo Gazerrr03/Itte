@@ -161,3 +161,10 @@ export class CloudTTSProviderStub implements TTSProvider {
 export function isTTSCancelledError(error: unknown) {
   return error instanceof TTSCancelledError;
 }
+
+export function createTTSProvider(engine: TTSEngine): TTSProvider {
+  if (engine === "cloud") {
+    return new CloudTTSProviderStub();
+  }
+  return new BrowserTTSProvider();
+}

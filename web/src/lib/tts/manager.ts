@@ -1,6 +1,6 @@
 import { ChatMessage } from "@/types/chat";
 
-import { BrowserTTSProvider, CloudTTSProviderStub, isTTSCancelledError, type TTSEngine, type TTSProvider } from "./providers";
+import { createTTSProvider, isTTSCancelledError, type TTSEngine, type TTSProvider } from "./providers";
 
 export type TTSManagerConfig = {
   ttsEnabled: boolean;
@@ -30,8 +30,8 @@ const defaultState: TTSManagerState = {
 
 export class TTSManager {
   private readonly providers: Record<TTSEngine, TTSProvider> = {
-    browser: new BrowserTTSProvider(),
-    cloud: new CloudTTSProviderStub(),
+    browser: createTTSProvider("browser"),
+    cloud: createTTSProvider("cloud"),
   };
   private readonly listeners = new Set<(state: TTSManagerState) => void>();
   private readonly messageCache = new Map<string, string>();
