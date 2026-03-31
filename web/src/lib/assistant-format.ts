@@ -21,7 +21,24 @@ const OPTIMIZE_NATURAL_PATTERN = /more natural way to say(?:\s+it)?\s+is/i;
 const QUESTION_HINT_PATTERN = /[?？]/;
 
 function stripMarkdown(raw: string) {
-  return raw.replace(/\r/g, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
+  return raw
+    .replace(/\r/g, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+}
+
+function stripDecorativeSymbols(raw: string) {
+  return raw
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^\s*[*•\-]+\s+/, "")
+        .replace(/^\s*\d+[.)]\s+/, "")
+        .replace(/^\s*["“”'‘’]+\s*/, "")
+        .replace(/\s*["“”'‘’]+\s*$/, ""),
+    )
+    .join("\n");
 }
 
 function tryParseJson(raw: string): unknown {
@@ -224,7 +241,7 @@ function parseLegacySections(raw: string): AssistantSection[] {
       sections.push({ key: "translation_logic", content: logic, variant: "mono" });
     }
     if (continueTopic) {
-      sections.push({ key: "continue_topic", content: continueTopic, variant: "mono" });
+      sections.push({ key: "continue_topic", content: continueTopic, variant: "main" });
     }
     return sections;
   }
@@ -234,8 +251,13 @@ function parseLegacySections(raw: string): AssistantSection[] {
     return optimizeSections;
   }
 
+  const freeformVibeSections = parseVibeSectionsWithoutLabels(root);
+  if (freeformVibeSections.length > 0) {
+    return freeformVibeSections;
+  }
+
   if (root) {
-    return [{ key: "dialogue", content: root, variant: "main" }];
+    return [{ key: "continue_topic", content: root, variant: "main" }];
   }
 
   return [];
@@ -246,7 +268,7 @@ function parseOptimizeSections(raw: string): AssistantSection[] {
     return [];
   }
 
-  const normalized = raw.replace(/\r/g, "").replace(/\*\*/g, "").trim();
+  const normalized = stripDecorativeSymbols(stripMarkdown(raw)).trim();
   if (!normalized) {
     return [];
   }
@@ -260,7 +282,33 @@ function parseOptimizeSections(raw: string): AssistantSection[] {
     .map((entry) => entry.trim())
     .filter(Boolean);
   if (paragraphs.length < 2) {
-    return [];
+    const sentences = splitSentences(normalized);
+    if (sentences.length < 2) {
+      return [];
+    }
+
+    let continueSentenceIndex = -1;
+    for (let index = sentences.length - 1; index >= 1; index -= 1) {
+      if (QUESTION_HINT_PATTERN.test(sentences[index])) {
+        continueSentenceIndex = index;
+        break;
+      }
+    }
+
+    if (continueSentenceIndex <= 0) {
+      return [];
+    }
+
+    const guidance = sentences.slice(0, continueSentenceIndex).join(" ").trim();
+    const continueTopic = sentences.slice(continueSentenceIndex).join(" ").trim();
+    if (!guidance || !continueTopic) {
+      return [];
+    }
+
+    return [
+      { key: "translation_logic", content: guidance, variant: "mono" },
+      { key: "dialogue", content: continueTopic, variant: "main" },
+    ];
   }
 
   let continueIndex = -1;
@@ -284,6 +332,46 @@ function parseOptimizeSections(raw: string): AssistantSection[] {
   return [
     { key: "translation_logic", content: guidance, variant: "mono" },
     { key: "dialogue", content: continueTopic, variant: "main" },
+  ];
+}
+
+function parseVibeSectionsWithoutLabels(raw: string): AssistantSection[] {
+  const paragraphs = raw
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length < 2) {
+    return [];
+  }
+
+  let splitIndex = -1;
+  for (let index = 1; index < paragraphs.length; index += 1) {
+    const current = paragraphs[index];
+    if (
+      /^\s*[*"“”'‘’]/.test(current) ||
+      /(^|\s)your turn\b/i.test(current) ||
+      /(^|\s)(hi|hello|hey)\b/i.test(current) ||
+      /["“”]/.test(current)
+    ) {
+      splitIndex = index;
+      break;
+    }
+  }
+
+  if (splitIndex <= 0) {
+    return [];
+  }
+
+  const scene = paragraphs.slice(0, splitIndex).join("\n\n").trim();
+  const dialogue = paragraphs.slice(splitIndex).join("\n\n").trim();
+  if (!scene || !dialogue) {
+    return [];
+  }
+
+  return [
+    { key: "scene_setup", content: scene, variant: "mono" },
+    { key: "dialogue", content: dialogue, variant: "main" },
   ];
 }
 
@@ -311,7 +399,7 @@ function parseStructuredSections(raw: string): AssistantSection[] {
     sections.push({ key: "translation_logic", content: logic, variant: "mono" });
   }
   if (continueTopic) {
-    sections.push({ key: "continue_topic", content: continueTopic, variant: "mono" });
+    sections.push({ key: "continue_topic", content: continueTopic, variant: "main" });
   }
   if (scene) {
     sections.push({ key: "scene_setup", content: scene, variant: "mono" });
@@ -328,7 +416,7 @@ export function formatAssistantText(raw: string): FormattedAssistantText {
   const fallbackSections = sections.length > 0 ? sections : parseLegacySections(raw);
   const normalizedSections = fallbackSections.map((section) => ({
     ...section,
-    content: paragraphize(cleanMetadata(section.content)),
+    content: paragraphize(stripDecorativeSymbols(cleanMetadata(section.content))),
   }));
 
   if (normalizedSections.length > 0) {
@@ -340,10 +428,26 @@ export function formatAssistantText(raw: string): FormattedAssistantText {
     };
   }
 
-  const display = paragraphize(cleanMetadata(raw));
+  const display = paragraphize(stripDecorativeSymbols(cleanMetadata(raw)));
   return {
     display,
     preview: display.replace(/\s+/g, " ").trim().slice(0, 140),
     sections: [],
   };
+}
+
+export function getAssistantReadAloudText(raw: string) {
+  const formatted = formatAssistantText(raw);
+  if (formatted.sections.length === 0) {
+    return "";
+  }
+
+  const primaryOutput = formatted.sections
+    .filter((section) => section.key === "dialogue")
+    .map((section) => section.content.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  return primaryOutput;
 }

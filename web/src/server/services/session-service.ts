@@ -1,5 +1,11 @@
-import { MessageRole, SessionStatus } from "@prisma/client";
+import { MessageRole, SessionStatus, type Prisma } from "@prisma/client";
 
+import {
+  normalizeCommandOutput,
+  parseAssistantOutputSpecFromStreamMeta,
+  type AssistantOutputSpecV1,
+  type SlashCommand,
+} from "@/lib/assistant-output-spec";
 import { formatAssistantText } from "@/lib/assistant-format";
 import { db } from "@/server/db";
 import { refreshUserPersona } from "@/server/services/persona-service";
@@ -8,6 +14,33 @@ const TITLE_MAX = 60;
 const PREVIEW_MAX = 140;
 
 export const ALLOWED_COMMANDS = new Set(["/optimize", "/help", "/daily", "/vibe"]);
+
+function isSlashCommand(value: unknown): value is SlashCommand {
+  return typeof value === "string" && ALLOWED_COMMANDS.has(value);
+}
+
+function getSlashCommandFromMeta(streamMeta: Prisma.InputJsonObject | undefined): SlashCommand | null {
+  if (!streamMeta || typeof streamMeta.command !== "string") {
+    return null;
+  }
+  return isSlashCommand(streamMeta.command) ? streamMeta.command : null;
+}
+
+function buildAssistantStreamMeta(
+  command: SlashCommand | null,
+  streamMeta: Prisma.InputJsonObject | undefined,
+  spec: AssistantOutputSpecV1 | null,
+): Prisma.InputJsonObject | undefined {
+  if (!command && !streamMeta && !spec) {
+    return undefined;
+  }
+
+  return {
+    ...(streamMeta ?? {}),
+    ...(command ? { command } : {}),
+    ...(spec ? { spec: spec as unknown as Prisma.InputJsonValue } : {}),
+  };
+}
 
 export type SessionListItem = {
   id: string;
@@ -27,6 +60,8 @@ export type SessionWithMessages = {
     id: string;
     role: MessageRole;
     content: string;
+    rawContent?: string;
+    blocks?: AssistantOutputSpecV1["blocks"];
     createdAt: string;
   }[];
 };
@@ -188,6 +223,7 @@ export async function getSession(sessionId: string): Promise<SessionWithMessages
           id: true,
           role: true,
           content: true,
+          streamMeta: true,
           createdAt: true,
         },
       },
@@ -204,10 +240,19 @@ export async function getSession(sessionId: string): Promise<SessionWithMessages
     status: session.status,
     summary: session.summary,
     updatedAt: session.updatedAt.toISOString(),
-    messages: session.messages.map((message) => ({
-      ...message,
-      createdAt: message.createdAt.toISOString(),
-    })),
+    messages: session.messages.map((message) => {
+      const spec =
+        message.role === MessageRole.ASSISTANT ? parseAssistantOutputSpecFromStreamMeta(message.streamMeta) : null;
+      const rawContent = spec?.raw?.trim() ? spec.raw.trim() : message.content;
+      return {
+        id: message.id,
+        role: message.role,
+        content: rawContent,
+        rawContent: message.role === MessageRole.ASSISTANT ? rawContent : undefined,
+        blocks: spec?.blocks,
+        createdAt: message.createdAt.toISOString(),
+      };
+    }),
   };
 }
 
@@ -302,12 +347,18 @@ export async function appendConversation(params: {
   rawInput: string;
   command: string | null;
   assistantContent: string;
-  streamMeta?: Record<string, unknown>;
+  streamMeta?: Prisma.InputJsonObject;
 }) {
   const { sessionId, userContent, rawInput, command, assistantContent, streamMeta } = params;
+  const slashCommand = isSlashCommand(command) ? command : null;
+  const userStreamMeta: Prisma.InputJsonObject | undefined = slashCommand
+    ? { ...(streamMeta ?? {}), command: slashCommand }
+    : streamMeta;
 
   const normalizedAssistant =
     command === "/daily" ? normalizeDailyOutput(assistantContent) : normalizeAssistantOutput(assistantContent);
+  const assistantSpec = slashCommand ? normalizeCommandOutput(slashCommand, normalizedAssistant) : null;
+  const assistantStreamMeta = buildAssistantStreamMeta(slashCommand, streamMeta, assistantSpec);
   const assistantPreviewSource = normalizedAssistant
     ? formatAssistantText(normalizedAssistant).preview
     : toPreview(userContent);
@@ -324,7 +375,7 @@ export async function appendConversation(params: {
         role: MessageRole.USER,
         content: userContent,
         rawInput,
-        streamMeta: command ? { command, ...(streamMeta ?? {}) } : streamMeta ?? undefined,
+        streamMeta: userStreamMeta,
       },
     }),
     db.message.create({
@@ -332,6 +383,7 @@ export async function appendConversation(params: {
         sessionId,
         role: MessageRole.ASSISTANT,
         content: normalizedAssistant,
+        streamMeta: assistantStreamMeta,
       },
     }),
     db.session.update({
@@ -350,10 +402,14 @@ export async function appendConversation(params: {
 export async function createAssistantInitiatedSession(params: {
   title: string;
   assistantContent: string;
-  streamMeta?: Record<string, unknown>;
+  streamMeta?: Prisma.InputJsonObject;
 }) {
-  const formatted = formatAssistantText(params.assistantContent);
-  const preview = toPreview(formatted.preview || params.assistantContent);
+  const commandFromMeta = getSlashCommandFromMeta(params.streamMeta);
+  const assistantSpec = commandFromMeta ? normalizeCommandOutput(commandFromMeta, params.assistantContent) : null;
+  const assistantStreamMeta = buildAssistantStreamMeta(commandFromMeta, params.streamMeta, assistantSpec);
+  const persistedAssistantContent = assistantSpec?.raw || params.assistantContent;
+  const formatted = formatAssistantText(persistedAssistantContent);
+  const preview = toPreview(formatted.preview || persistedAssistantContent);
 
   const session = await db.session.create({
     data: {
@@ -363,8 +419,8 @@ export async function createAssistantInitiatedSession(params: {
       messages: {
         create: {
           role: MessageRole.ASSISTANT,
-          content: params.assistantContent,
-          streamMeta: params.streamMeta,
+          content: persistedAssistantContent,
+          streamMeta: assistantStreamMeta,
         },
       },
     },

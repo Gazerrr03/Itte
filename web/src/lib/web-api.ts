@@ -1,4 +1,4 @@
-import { ChatMessage, SessionListItem, WebSetting } from "@/types/chat";
+import { ChatMessage, SessionListItem, WebSetting, type AssistantOutputBlock } from "@/types/chat";
 
 type SessionResponse = {
   session: {
@@ -11,6 +11,8 @@ type SessionResponse = {
       id: string;
       role: "USER" | "ASSISTANT" | "SYSTEM";
       content: string;
+      rawContent?: string;
+      blocks?: AssistantOutputBlock[];
       createdAt: string;
     }[];
   };
@@ -31,6 +33,8 @@ function mapMessages(response: SessionResponse["session"]["messages"]): ChatMess
     id: message.id,
     role: mapRole(message.role),
     content: message.content,
+    rawContent: message.rawContent,
+    blocks: message.blocks,
     createdAt: message.createdAt,
   }));
 }
@@ -192,6 +196,10 @@ export async function translateAssistantMessage(params: { sessionId: string; mes
   });
   const data = (await response.json()) as {
     translation?: string;
+    sections?: Array<{
+      key?: "translation_logic" | "continue_topic" | "scene_setup" | "dialogue" | "guidance" | "meta";
+      content?: string;
+    }>;
     provider?: "deepl";
     targetLang?: "ZH";
     error?: string;
@@ -203,6 +211,12 @@ export async function translateAssistantMessage(params: { sessionId: string; mes
 
   return {
     translation: data.translation,
+    sections: (data.sections ?? [])
+      .map((entry) => ({
+        key: entry.key ?? "continue_topic",
+        content: entry.content?.trim() ?? "",
+      }))
+      .filter((entry) => Boolean(entry.content)),
     provider: data.provider ?? "deepl",
     targetLang: data.targetLang ?? "ZH",
   };
