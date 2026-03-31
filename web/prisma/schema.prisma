@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum SessionStatus {
+  ACTIVE
+  ENDED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum DailyRunType {
+  MANUAL
+  PROACTIVE
+}
+
+enum ProactiveEventStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  SKIPPED_OFFLINE
+  CANCELED
+}
+
+model Session {
+  id          String        @id @default(cuid())
+  title       String
+  status      SessionStatus @default(ACTIVE)
+  lastPreview String?
+  summary     String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  endedAt     DateTime?
+
+  messages        Message[]
+  proactiveEvents ProactiveDailyEvent[]
+  dailyRuns       DailyTopicRun[]
+
+  @@index([updatedAt])
+}
+
+model Message {
+  id         String      @id @default(cuid())
+  sessionId  String
+  role       MessageRole
+  content    String
+  rawInput   String?
+  streamMeta Json?
+  createdAt  DateTime    @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+model WebSetting {
+  id                   String    @id @default("default")
+  streaming            Boolean   @default(true)
+  model                String?
+  ttsEnabled           Boolean   @default(true)
+  autoReadAssistant    Boolean   @default(true)
+  ttsEngine            TTSEngine @default(browser)
+  ttsVoice             String?
+  ttsRate              Float     @default(1)
+  proactiveDailyEnabled Boolean  @default(true)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+enum TTSEngine {
+  browser
+  cloud
+}
+
+model UserPersona {
+  id               String   @id @default("default")
+  topicInterests   Json
+  interactionPrefs Json
+  languageTrend    Json
+  recentFocus      Json
+  sourceStats      Json
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model DailyTopicRun {
+  id              String       @id @default(cuid())
+  requestKey      String       @unique
+  runType         DailyRunType
+  provider        String
+  fallbackUsed    Boolean      @default(false)
+  selectedTitle   String
+  selectedUrl     String?
+  selectedSummary String?
+  queryKeywords   Json
+  personaSnapshot Json
+  sessionId       String?
+  eventId         String?
+  createdAt       DateTime     @default(now())
+
+  session    Session?            @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  event      ProactiveDailyEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  candidates DailyTopicCandidate[]
+
+  @@index([runType, createdAt])
+  @@index([sessionId])
+  @@index([eventId])
+}
+
+model DailyTopicCandidate {
+  id          String   @id @default(cuid())
+  runId       String
+  source      String
+  title       String
+  url         String?
+  summary     String?
+  publishedAt DateTime?
+  score       Float?
+  selected    Boolean  @default(false)
+  fallback    Boolean  @default(false)
+  meta        Json?
+  createdAt   DateTime @default(now())
+
+  run DailyTopicRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, score])
+}
+
+model ProactiveDailyEvent {
+  id           String               @id @default(cuid())
+  scheduledFor DateTime
+  status       ProactiveEventStatus @default(PENDING)
+  processedAt  DateTime?
+  sessionId    String?
+  skipReason   String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  session Session?       @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  runs    DailyTopicRun[]
+
+  @@index([status, scheduledFor])
+  @@index([sessionId])
+}
