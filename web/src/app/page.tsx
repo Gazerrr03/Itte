@@ -150,6 +150,7 @@ export default function Home() {
   });
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastAutoReadMessageIdRef = useRef<string | null>(null);
 
   const canSend = useMemo(
     () => Boolean(activeSessionId) && draft.trim().length > 0 && !isSending && !activeSessionEnded,
@@ -342,7 +343,13 @@ export default function Home() {
         .reverse()
         .find((message) => message.role === "assistant" && (message.rawContent ?? message.content).trim().length > 0);
 
-      if (setting.ttsEnabled && setting.autoReadAssistant && latestAssistant) {
+      if (
+        setting.ttsEnabled &&
+        setting.autoReadAssistant &&
+        latestAssistant &&
+        latestAssistant.id !== lastAutoReadMessageIdRef.current
+      ) {
+        lastAutoReadMessageIdRef.current = latestAssistant.id;
         await ttsManager.speak(latestAssistant.rawContent ?? latestAssistant.content, {
           messageId: latestAssistant.id,
         });
@@ -399,6 +406,7 @@ export default function Home() {
     try {
       ttsManager.stop();
       const session = await createSession();
+      lastAutoReadMessageIdRef.current = null;
       setSessions((previous) => [session, ...previous]);
       setActiveSessionId(session.id);
       setMessages([]);
@@ -418,6 +426,7 @@ export default function Home() {
     }
 
     ttsManager.stop();
+    lastAutoReadMessageIdRef.current = null;
     setActiveSessionId(sessionId);
     setSidebarOpen(false);
     setPanelNotice(null);
@@ -474,6 +483,7 @@ export default function Home() {
 
       if (nextSessions.length === 0) {
         const created = await createSession();
+        lastAutoReadMessageIdRef.current = null;
         setSessions([created]);
         setActiveSessionId(created.id);
         setMessages([]);
@@ -579,6 +589,7 @@ export default function Home() {
     setIsEndingSession(true);
     setPanelNotice(null);
     ttsManager.stop();
+    lastAutoReadMessageIdRef.current = null;
 
     try {
       await endSession(activeSessionId);
