@@ -126,6 +126,7 @@ export async function POST(_: Request, context: { params: Promise<{ id: string; 
       },
       body: body.toString(),
       cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     return NextResponse.json({ error: "DeepL request failed." }, { status: 502 });
