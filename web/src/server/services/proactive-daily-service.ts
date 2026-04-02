@@ -11,6 +11,17 @@ export type ProactiveDispatchResult = {
   skippedCount: number;
 };
 
+let scheduleQueue = Promise.resolve();
+
+function withScheduleLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = scheduleQueue.then(task, task);
+  scheduleQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 function dayBounds(base: Date) {
   const start = new Date(base);
   start.setHours(0, 0, 0, 0);
@@ -40,31 +51,33 @@ function buildRandomDailyTimes(base: Date, count: number) {
 }
 
 async function ensureTodaySchedule(now: Date) {
-  const { start, end } = dayBounds(now);
-  const existing = await db.proactiveDailyEvent.count({
-    where: {
-      scheduledFor: {
-        gte: start,
-        lt: end,
+  return withScheduleLock(async () => {
+    const { start, end } = dayBounds(now);
+    const existing = await db.proactiveDailyEvent.count({
+      where: {
+        scheduledFor: {
+          gte: start,
+          lt: end,
+        },
+        status: {
+          not: ProactiveEventStatus.CANCELED,
+        },
       },
-      status: {
-        not: ProactiveEventStatus.CANCELED,
-      },
-    },
-  });
+    });
 
-  if (existing > 0) {
-    return;
-  }
+    if (existing > 0) {
+      return;
+    }
 
-  const dailyCount = 3 + Math.floor(Math.random() * 3);
-  const scheduledTimes = buildRandomDailyTimes(now, dailyCount);
+    const dailyCount = 3 + Math.floor(Math.random() * 3);
+    const scheduledTimes = buildRandomDailyTimes(now, dailyCount);
 
-  await db.proactiveDailyEvent.createMany({
-    data: scheduledTimes.map((scheduledFor) => ({
-      scheduledFor,
-      status: ProactiveEventStatus.PENDING,
-    })),
+    await db.proactiveDailyEvent.createMany({
+      data: scheduledTimes.map((scheduledFor) => ({
+        scheduledFor,
+        status: ProactiveEventStatus.PENDING,
+      })),
+    });
   });
 }
 
