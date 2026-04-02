@@ -7,11 +7,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends curl jq \
   && rm -rf /var/lib/apt/lists/*
 
+# Install dependencies before copying the full repository for better layer caching.
+COPY web/package*.json /app/web/
+RUN cd /app/web \
+  && npm ci
+
 COPY . .
 
 RUN chmod +x /app/itte \
   && cd /app/web \
-  && npm ci \
   && npx prisma generate \
   && npm run build
 
