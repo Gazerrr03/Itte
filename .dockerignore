@@ -1,0 +1,8 @@
+.git
+.DS_Store
+.env
+web/.env
+node_modules
+web/node_modules
+web/.next
+web/prisma/dev.db
