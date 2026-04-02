@@ -1,0 +1,270 @@
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Itte - Zen Mode</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:ital,wght@0,300;1,300&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#2b2b2b",
+                        "on-surface": "#2b2b2b",
+                        "background": "#f5f5f5",
+                        "surface": "#f5f5f5",
+                        "outline": "#8e9192",
+                        "primary-container": "#2b2b2b",
+                        "on-primary-container": "#f5f5f5",
+                        "secondary-dim": "#704b23"
+                    },
+                    fontFamily: {
+                        headline: ["Inter"],
+                        body: ["Inter"],
+                        label: ["Inter"],
+                        display: ["Inter"],
+                        mono: ["JetBrains Mono"]
+                    },
+                    borderRadius: {
+                        DEFAULT: "12px",
+                        lg: "12px",
+                        xl: "12px",
+                        full: "9999px"
+                    }
+                }
+            }
+        };
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+            display: inline-block;
+            line-height: 1;
+        }
+        .zen-input-area:focus-within .zen-tools {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .zen-tools {
+            opacity: 0.4;
+            transform: translateY(4px);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .zen-tools:hover {
+            opacity: 1;
+        }
+        .hide-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .hide-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* High-Fidelity Liquid Glassmorphism */
+        .squircle-frame {
+            border-radius: 48px;
+            /* Using a large radius for the container */
+        }
+        
+        .liquid-glass-high-fi {
+            background: rgba(255, 255, 255, 0.45);
+            backdrop-filter: blur(48px) saturate(160%);
+            -webkit-backdrop-filter: blur(48px) saturate(160%);
+            border: 0.5px solid rgba(255, 255, 255, 0.6);
+            box-shadow: 
+                inset 0 1px 1px rgba(255, 255, 255, 1),
+                inset 0 -0.5px 1px rgba(0, 0, 0, 0.05),
+                0 20px 60px -15px rgba(100, 116, 139, 0.15),
+                0 0 40px rgba(200, 210, 255, 0.1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Grain Noise Texture Overlay */
+        .grain-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            opacity: 0.04;
+            mix-blend-mode: overlay;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* Fluid Mesh Background for the frame */
+        .fluid-mesh {
+            position: absolute;
+            inset: -50%;
+            background: 
+                radial-gradient(circle at 20% 30%, rgba(220, 230, 255, 0.4) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(255, 230, 240, 0.4) 0%, transparent 50%),
+                radial-gradient(circle at 50% 80%, rgba(240, 245, 255, 0.3) 0%, transparent 60%);
+            filter: blur(40px);
+            z-index: 0;
+            animation: fluid-drift 25s infinite alternate ease-in-out;
+        }
+
+        @keyframes fluid-drift {
+            0% { transform: rotate(0deg) scale(1); }
+            100% { transform: rotate(10deg) scale(1.1); }
+        }
+
+        .liquid-glow-shadow {
+            filter: drop-shadow(0 25px 50px rgba(180, 190, 220, 0.3));
+        }
+
+        .liquid-button-fused {
+            background: rgba(255, 255, 255, 0.4);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 0.5px solid rgba(255, 255, 255, 0.5);
+            box-shadow: 
+                inset 0 1px 1px rgba(255, 255, 255, 0.8),
+                0 4px 15px rgba(0, 0, 0, 0.04);
+            transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+        
+        .liquid-button-fused:hover {
+            transform: translateY(-2px);
+            background: rgba(255, 255, 255, 0.6);
+            box-shadow: 
+                inset 0 1px 2px rgba(255, 255, 255, 1),
+                0 10px 25px rgba(0, 0, 0, 0.08);
+        }
+
+        .liquid-button-fused-primary {
+            background: #2b2b2b;
+            color: white;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+        
+        .liquid-button-fused-primary:hover {
+            background: #1a1a1a;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Seamless background for main container to transition to input */
+        .main-gradient-fade {
+            background: linear-gradient(to bottom, #f5f5f5 0%, #f5f5f5 80%, rgba(245, 245, 245, 0) 100%);
+        }
+    </style>
+</head>
+<body class="bg-[#f5f5f5] font-body text-on-surface/90 selection:bg-primary/10 selection:text-primary">
+<!-- Minimal Floating Nav -->
+<nav class="fixed top-0 w-full z-50 pointer-events-none">
+<div class="flex justify-between items-center w-full px-8 py-6 max-w-screen-2xl mx-auto pointer-events-auto">
+<div class="flex items-center gap-8">
+<button class="material-symbols-outlined text-primary/40 hover:text-primary transition-colors" data-icon="menu">menu</button>
+<span class="text-xl font-medium text-primary/40 tracking-tight italic select-none">Itte</span>
+</div>
+<div class="flex items-center gap-6">
+<div class="text-[10px] tracking-[0.2em] uppercase text-primary/30 font-bold">Zen Flow</div>
+<button class="material-symbols-outlined text-primary/30 hover:text-primary transition-colors scale-90" data-icon="account_circle">account_circle</button>
+</div>
+</div>
+</nav>
+<div class="flex h-screen overflow-hidden">
+<!-- Main Content Area -->
+<main class="flex-1 flex flex-col relative bg-[#f5f5f5] overflow-hidden">
+<!-- Whitespace and centered focus -->
+<div class="flex-1 overflow-y-auto hide-scrollbar px-6 md:px-0 py-32 space-y-32 flex flex-col items-center">
+<div class="w-full max-w-3xl space-y-24">
+<!-- Assistant Message -->
+<div class="group flex flex-col gap-8">
+<div class="text-3xl md:text-4xl leading-tight text-[#2b2b2b] font-bold tracking-tight">
+                        I see what you mean. It’s okay to start small. Let’s keep going.
+                    </div>
+<div class="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="text-[10px] text-outline/40 uppercase tracking-[0.2em] font-bold">Itte</span>
+<div class="h-px w-8 bg-outline/10"></div>
+</div>
+</div>
+<!-- User Message -->
+<div class="group flex flex-col items-end gap-6">
+<div class="text-xl md:text-2xl leading-relaxed text-primary/50 font-light text-right italic max-w-[85%]">
+                        I'm trying to say that learning a language is like building a house, one brick at a time... but sometimes I forget where the bricks go.
+                    </div>
+<div class="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+<div class="h-px w-8 bg-outline/10"></div>
+<span class="text-[10px] text-outline/40 uppercase tracking-[0.2em] font-bold">Reflection</span>
+</div>
+</div>
+<!-- Assistant Response -->
+<div class="group flex flex-col gap-10">
+<div class="text-3xl md:text-4xl leading-tight text-[#2b2b2b] font-bold tracking-tight">
+                        That's a beautiful metaphor.
+                    </div>
+<div class="space-y-6">
+<div class="font-mono text-sm md:text-base italic text-outline/70 border-l-2 border-outline/10 pl-6 py-1 leading-relaxed max-w-2xl">
+                            In Italian, we could say <span class="text-secondary-dim font-medium not-italic">"Passo dopo passo si fa la strada"</span> — which literally translates to "step by step, the road is made." This mirrors your "brick by brick" sentiment perfectly.
+                        </div>
+<div class="text-3xl md:text-4xl leading-tight text-[#2b2b2b] font-bold tracking-tight">
+                            Would you like to try translating your house metaphor into a simpler phrase?
+                        </div>
+</div>
+<div class="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="text-[10px] text-outline/40 uppercase tracking-[0.2em] font-bold">Itte</span>
+<div class="h-px w-8 bg-outline/10"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Zen Input Area with Liquid Glassmorphism -->
+<div class="relative pt-12 pb-16 px-6 overflow-hidden">
+<div class="max-w-4xl mx-auto zen-input-area w-full relative z-10 liquid-glow-shadow">
+<!-- Main Liquid Frame -->
+<div class="liquid-glass-high-fi squircle-frame p-4 md:p-6 flex flex-col gap-6">
+<!-- Textures & Gradients -->
+<div class="fluid-mesh"></div>
+<div class="grain-overlay"></div>
+<div class="relative z-10 flex items-center gap-4">
+<div class="flex-1 px-4">
+<textarea class="w-full bg-transparent border-none focus:ring-0 text-lg md:text-xl text-on-surface/80 placeholder:text-outline/40 resize-none font-light leading-relaxed py-2 h-10 hide-scrollbar" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Share your thoughts..." rows="1"></textarea>
+</div>
+<div class="flex items-center gap-3">
+<button class="flex items-center justify-center w-12 h-12 rounded-full liquid-button-fused text-outline/70 hover:text-on-surface cursor-pointer" title="Voice input">
+<span class="material-symbols-outlined">mic</span>
+</button>
+<button class="flex items-center justify-center w-12 h-12 rounded-full liquid-button-fused liquid-button-fused-primary cursor-pointer" title="Send">
+<span class="material-symbols-outlined rotate-[-45deg] ml-1">send</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Understated Tools -->
+<div class="zen-tools flex flex-wrap justify-center gap-8 mt-10 opacity-40 hover:opacity-100 transition-opacity">
+<button class="group flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold text-outline/50 hover:text-primary transition-all">
+<span class="material-symbols-outlined text-base" data-icon="auto_fix_high">auto_fix_high</span>
+                Optimize
+            </button>
+<button class="group flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold text-outline/50 hover:text-primary transition-all">
+<span class="material-symbols-outlined text-base" data-icon="lightbulb">lightbulb</span>
+                Explain
+            </button>
+<button class="group flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold text-outline/50 hover:text-primary transition-all">
+<span class="material-symbols-outlined text-base" data-icon="history_edu">history_edu</span>
+                Rewrite
+            </button>
+<button class="group flex items-center gap-2 text-[10px] uppercase tracking-widest font-bold text-outline/50 hover:text-primary transition-all">
+<span class="material-symbols-outlined text-base" data-icon="support_agent">support_agent</span>
+                Help me say it
+            </button>
+</div>
+</div>
+</div>
+</main>
+</div>
+<!-- Subtle Footer -->
+<footer class="fixed bottom-6 w-full pointer-events-none">
+<div class="max-w-screen-2xl mx-auto px-8 flex justify-between items-center opacity-20 hover:opacity-100 transition-opacity duration-700 pointer-events-auto">
+<span class="text-[9px] uppercase tracking-[0.3em] font-medium text-outline">Gentle Path System</span>
+<div class="flex gap-6">
+<a class="text-[9px] uppercase tracking-[0.2em] text-outline hover:text-primary transition-colors" href="#">Philosophy</a>
+<a class="text-[9px] uppercase tracking-[0.2em] text-outline hover:text-primary transition-colors" href="#">Privacy</a>
+</div>
+</div>
+</footer>
+</body></html>

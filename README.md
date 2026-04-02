@@ -5,7 +5,7 @@ Itte is a minimal English speaking practice CLI:
 - default: keep conversation going in English
 - on demand: optimize expression with `/optimize`
 - when stuck: `/help` gives translation/expression logic + topic continuation
-- one daily round: `/daily`
+- one daily practice prompt: `/daily`
 - inspect runtime logs: `/logs`
 
 This version is intentionally minimal:
@@ -21,7 +21,7 @@ This version is intentionally minimal:
 - `curl`
 - `jq`
 
-## Quick start
+## Bash CLI startup
 
 1) Copy env template:
 
@@ -36,8 +36,13 @@ cp .env.example .env
 - `ITTE_MODEL`
 - `ITTE_TEMPERATURE` (optional, default is `1`)
 - `ITTE_STREAM` (optional, `1` for token streaming, `0` to disable; default `1`)
-- `ITTE_COLOR_COMMANDS` (optional, `1` to color `/...` commands in light purple; default `1`)
+- `ITTE_COLOR_COMMANDS` (optional, `1` to color `/...` commands; default `1`)
 - `ITTE_SHOW_THINKING` (optional, `1` to print `thinking...` while waiting for model output; default `1`)
+- `ITTE_COMMAND_COLOR` (optional, command highlight color; default `purple`)
+- `ITTE_TOPIC_COLOR` (optional, `/help` topic section color; default `green`)
+- `ITTE_BILINGUAL_ASSIST` (optional, `1` for English+Chinese model replies; default `0`)
+
+Tip: if you want `/setting` to control these values persistently, keep the three `ITTE_*` setting overrides unset in `.env`.
 
 3) Make script executable:
 
@@ -45,7 +50,7 @@ cp .env.example .env
 chmod +x ./itte
 ```
 
-4) Run:
+4) Run Bash CLI:
 
 ```bash
 ./itte
@@ -63,13 +68,59 @@ Then restart terminal (or source your shell profile) and run:
 itte
 ```
 
+## Web UI startup (prototype)
+
+The web version lives in `web/` and is independent from the Bash CLI.
+
+1) Install dependencies:
+
+```bash
+cd web
+npm install
+cp .env.example .env
+```
+
+2) Initialize Prisma (first time only):
+
+```bash
+touch prisma/dev.db
+npm run prisma:migrate -- --name init
+```
+
+3) Start the development server:
+
+```bash
+npm run dev
+```
+
+4) Open in browser:
+
+```text
+http://localhost:3000
+```
+
+Optional production check:
+
+```bash
+npm run lint
+npm run build
+npm run start
+```
+
+Notes for Bash bridge mode:
+
+- Web server will spawn `../itte` and only pass Itte chat input (no arbitrary shell execution).
+- The spawned `itte` process loads repo-root `.env`, so keep `ITTE_API_BASE`, `ITTE_API_KEY`, and `ITTE_MODEL` configured there.
+
 ## Commands
 
 ```text
 /optimize <text>   -> optimize your expression
 /help <text>       -> explain translation/expression logic, then continue topic
-/daily             -> start one daily guided round
+/daily             -> start one guided daily practice prompt
+/vibe <scene>      -> generate scene setup and one in-character dialogue line
 /logs [n]          -> show latest structured run logs
+/setting           -> open interactive settings
 /commands          -> show command list
 ```
 
@@ -86,9 +137,11 @@ Notes:
 
 - `/optimize` and `/help` must include text.
 - `/help` output has two sections: `Translation Logic` and `Continue the topic`.
+- `/vibe` output has two sections: `Scene Setup` and `Dialogue` (`Dialogue` is a single in-character sentence).
+- `/setting` opens an interactive settings UI (colors + bilingual assist).
 - Exit session with `Ctrl+D` in terminal.
 - Default output language is English.
-- Chinese explanation is only used when user explicitly asks.
+- When bilingual assist is on, model replies are English first, then Chinese.
 
 ## Data storage
 
@@ -103,6 +156,7 @@ Files:
 - `profile.json`: language/profile memory (structured, lightweight)
 - `summaries.jsonl`: one summary record per ended session
 - `run_logs.jsonl`: structured model call logs (`request_id`, `mode`, `latency`, `error`, `tokens`)
+- `settings.json`: persistent settings used by `/setting`
 - `daily_topics.json`: daily topic source (copied from repo on first run)
 - `current_session.json`: temporary state for current session
 
