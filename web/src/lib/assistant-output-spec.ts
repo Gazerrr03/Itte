@@ -147,7 +147,19 @@ function removeDialogueFromText(raw: string, dialogue: string) {
   }
 
   const escapedTarget = escapeRegExp(target);
-  return source.replace(new RegExp(`\\s*${escapedTarget}\\s*`, "g"), " ").replace(/\s{2,}/g, " ").trim();
+  const trailingMatch = source.match(new RegExp(`\\s*${escapedTarget}\\s*$`));
+  if (trailingMatch) {
+    return source.slice(0, trailingMatch.index).trim();
+  }
+
+  const inlineMatch = source.match(new RegExp(`(^|\\s+)${escapedTarget}(?=\\s+|$)`));
+  if (!inlineMatch || typeof inlineMatch.index !== "number") {
+    return source;
+  }
+
+  const start = inlineMatch.index + (inlineMatch[1] ? inlineMatch[1].length : 0);
+  const end = start + target.length;
+  return `${source.slice(0, start)} ${source.slice(end)}`.replace(/\s{2,}/g, " ").trim();
 }
 
 function buildBlock(role: AssistantOutputBlockRole, text: string, style: AssistantOutputBlockStyle, speak: boolean) {
