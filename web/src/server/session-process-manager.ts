@@ -95,6 +95,7 @@ class SessionRunner {
   private readonly child: ChildProcessWithoutNullStreams;
   private opQueue = Promise.resolve();
   private pendingRead: PendingRead | null = null;
+  private unusable = false;
 
   constructor(sessionId: string, env: NodeJS.ProcessEnv) {
     this.sessionId = sessionId;
@@ -120,6 +121,7 @@ class SessionRunner {
   }
 
   private handleExit() {
+    this.unusable = true;
     if (!this.pendingRead) {
       return;
     }
@@ -189,10 +191,15 @@ class SessionRunner {
 
     return new Promise<string>((resolve, reject) => {
       const timeout = setTimeout(() => {
+        this.unusable = true;
         if (this.pendingRead) {
+          const rejectPending = this.pendingRead.reject;
           this.pendingRead = null;
+          rejectPending(new Error(`Session ${this.sessionId} timed out while waiting for prompt.`));
         }
-        reject(new Error(`Session ${this.sessionId} timed out while waiting for prompt.`));
+        if (this.child.exitCode === null) {
+          this.child.kill("SIGTERM");
+        }
       }, timeoutMs);
 
       this.pendingRead = {
@@ -223,7 +230,7 @@ class SessionRunner {
 
   async sendLine(line: string, options: ReadOptions = {}): Promise<string> {
     return this.enqueue(async () => {
-      if (this.child.exitCode !== null) {
+      if (this.unusable || this.child.exitCode !== null) {
         throw new Error(`Session process ${this.sessionId} is not running.`);
       }
 
