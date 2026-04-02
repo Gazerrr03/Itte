@@ -20,6 +20,7 @@ RUN chmod +x /app/itte \
   && npm run build
 
 ENV NODE_ENV=production
+ENV HOME=/data
 EXPOSE 3000
 
-CMD ["bash", "-lc", "mkdir -p /data/web && cd /app/web && npx prisma migrate deploy && npm run start"]
+CMD ["bash", "-c", "mkdir -p /data/web /data/.itte && cd /app/web && npx prisma migrate deploy && npm run start"]
