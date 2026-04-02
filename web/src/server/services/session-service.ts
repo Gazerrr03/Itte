@@ -320,22 +320,11 @@ export async function getReplayInputs(sessionId: string) {
 
   const replayInputs = rows
     .filter((row) => row.role === MessageRole.USER && typeof row.rawInput === "string" && row.rawInput.trim().length > 0)
-    .map((row) => row.rawInput!.trim());
+    .map((row) => row.rawInput!.trim())
+    .filter((input) => !/^\/daily\b/i.test(input));
 
   if (replayInputs.length > 0) {
     return replayInputs;
-  }
-
-  const hasAssistantDailySeed = rows.some((row) => {
-    if (row.role !== MessageRole.ASSISTANT || !row.streamMeta || typeof row.streamMeta !== "object") {
-      return false;
-    }
-    const meta = row.streamMeta as Record<string, unknown>;
-    return meta.command === "/daily" || meta.proactive === true;
-  });
-
-  if (hasAssistantDailySeed) {
-    return ["/daily"];
   }
 
   return [];
