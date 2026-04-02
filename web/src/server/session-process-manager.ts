@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 const ANSI_PATTERN = /\u001b\[[0-9;]*m/g;
@@ -82,6 +83,13 @@ function resolveIttePaths() {
   return { scriptPath: path.resolve(projectRoot, "itte"), cwd: projectRoot };
 }
 
+function resolveSessionHome(sessionId: string) {
+  const configuredRoot = process.env.ITTE_WEB_HOME_ROOT?.trim();
+  const projectRoot = resolveIttePaths().cwd;
+  const homeRoot = configuredRoot ? path.resolve(configuredRoot) : path.resolve(projectRoot, ".itte-web-home");
+  return path.resolve(homeRoot, sessionId);
+}
+
 class SessionRunner {
   private readonly sessionId: string;
   private readonly child: ChildProcessWithoutNullStreams;
@@ -91,10 +99,15 @@ class SessionRunner {
   constructor(sessionId: string, env: NodeJS.ProcessEnv) {
     this.sessionId = sessionId;
     const { scriptPath, cwd } = resolveIttePaths();
+    const sessionHome = resolveSessionHome(sessionId);
+    mkdirSync(sessionHome, { recursive: true });
 
     this.child = spawn(scriptPath, [], {
       cwd,
-      env,
+      env: {
+        ...env,
+        HOME: sessionHome,
+      },
       stdio: "pipe",
     });
 
