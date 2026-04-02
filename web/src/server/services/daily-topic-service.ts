@@ -1,4 +1,4 @@
-import { DailyRunType } from "@prisma/client";
+import { DailyRunType, type Prisma } from "@prisma/client";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -13,7 +13,7 @@ type TopicCandidate = {
   publishedAt?: Date;
   score?: number;
   fallback?: boolean;
-  meta?: Record<string, unknown>;
+  meta?: Prisma.InputJsonObject;
 };
 
 type ProviderResult = {
