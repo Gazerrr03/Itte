@@ -1,6 +1,6 @@
 import { DailyRunType, ProactiveEventStatus } from "@prisma/client";
 
-import { db } from "@/server/db";
+import { db, getDb } from "@/server/db";
 import { buildDailyRequestKey, generateDailyTopic, refreshPersonaBeforeDaily } from "@/server/services/daily-topic-service";
 import { getWebSetting } from "@/server/services/settings-service";
 import { createAssistantInitiatedSession, listSessions } from "@/server/services/session-service";
@@ -160,12 +160,13 @@ export async function pollAndDispatchProactiveDaily(now = new Date()): Promise<P
       },
     });
 
-    await db.$transaction([
-      db.dailyTopicRun.update({
+    const client = await getDb();
+    await client.$transaction([
+      client.dailyTopicRun.update({
         where: { id: topic.runId },
         data: { sessionId: session.id },
       }),
-      db.proactiveDailyEvent.update({
+      client.proactiveDailyEvent.update({
         where: { id: latestDue.id },
         data: {
           status: ProactiveEventStatus.DELIVERED,

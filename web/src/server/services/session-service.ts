@@ -7,7 +7,7 @@ import {
   type SlashCommand,
 } from "@/lib/assistant-output-spec";
 import { formatAssistantText } from "@/lib/assistant-format";
-import { db } from "@/server/db";
+import { db, getDb } from "@/server/db";
 import { refreshUserPersona } from "@/server/services/persona-service";
 
 const TITLE_MAX = 60;
@@ -368,8 +368,9 @@ export async function appendConversation(params: {
     where: { sessionId, role: MessageRole.USER },
   });
 
-  await db.$transaction([
-    db.message.create({
+  const client = await getDb();
+  await client.$transaction([
+    client.message.create({
       data: {
         sessionId,
         role: MessageRole.USER,
@@ -378,7 +379,7 @@ export async function appendConversation(params: {
         streamMeta: userStreamMeta,
       },
     }),
-    db.message.create({
+    client.message.create({
       data: {
         sessionId,
         role: MessageRole.ASSISTANT,
@@ -386,7 +387,7 @@ export async function appendConversation(params: {
         streamMeta: assistantStreamMeta,
       },
     }),
-    db.session.update({
+    client.session.update({
       where: { id: sessionId },
       data: {
         title: existingCount === 0 ? toTitle(userContent) : undefined,
@@ -442,15 +443,16 @@ export async function createAssistantInitiatedSession(params: {
 export async function appendSystemSummary(sessionId: string, summaryText: string) {
   const preview = toPreview(summaryText || "Session ended.");
 
-  await db.$transaction([
-    db.message.create({
+  const client = await getDb();
+  await client.$transaction([
+    client.message.create({
       data: {
         sessionId,
         role: MessageRole.SYSTEM,
         content: summaryText,
       },
     }),
-    db.session.update({
+    client.session.update({
       where: { id: sessionId },
       data: {
         status: SessionStatus.ENDED,
