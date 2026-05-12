@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
+import { MessageRole } from "@prisma/client";
 
 import { db } from "@/server/db";
-import { sessionProcessManager } from "@/server/session-process-manager";
-import { appendSystemSummary, buildFallbackSummary, deriveSummaryText } from "@/server/services/session-service";
+import { reloadApiConfig, generateSessionSummary } from "@/server/ai-client";
+import { appendSystemSummary, buildFallbackSummary } from "@/server/services/session-service";
 
 export async function POST(_: Request, context: { params: Promise<{ id: string }> }) {
   const { id: sessionId } = await context.params;
 
   const session = await db.session.findUnique({
     where: { id: sessionId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, createdAt: true },
   });
 
   if (!session) {
@@ -20,23 +21,35 @@ export async function POST(_: Request, context: { params: Promise<{ id: string }
     return NextResponse.json({ error: "Session is already ended." }, { status: 400 });
   }
 
-  let summary = "Session ended.";
+  reloadApiConfig();
 
-  if (sessionProcessManager.hasSession(sessionId)) {
-    try {
-      const rawOutput = await sessionProcessManager.endSession(sessionId);
-      const parsed = deriveSummaryText(rawOutput);
-      if (parsed) {
-        summary = parsed;
-      }
-    } catch {
-      sessionProcessManager.disposeSession(sessionId);
-    }
-  } else {
-    sessionProcessManager.disposeSession(sessionId);
+  // Query all messages for summary context.
+  const rows = await db.message.findMany({
+    where: { sessionId },
+    orderBy: { createdAt: "asc" },
+    select: { role: true, content: true, rawInput: true },
+  });
+
+  const history = rows
+    .filter((m) => m.role !== MessageRole.SYSTEM)
+    .map((m) => ({
+      role: (m.role === MessageRole.ASSISTANT ? "assistant" : "user") as "user" | "assistant",
+      content: m.role === MessageRole.USER ? (m.rawInput ?? m.content) : m.content,
+    }));
+
+  let summary: string;
+  try {
+    summary = await generateSessionSummary(
+      sessionId,
+      session.createdAt.toISOString(),
+      "General conversation",
+      history,
+    );
+  } catch {
+    summary = await buildFallbackSummary(sessionId);
   }
 
-  if (summary === "Session ended.") {
+  if (!summary || summary === "Session ended.") {
     summary = await buildFallbackSummary(sessionId);
   }
 

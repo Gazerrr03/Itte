@@ -18,4 +18,4 @@ RUN chmod +x /app/itte \
 ENV NODE_ENV=production
 EXPOSE 3000
 
-CMD ["bash", "-lc", "mkdir -p /data/web && cd /app/web && npx prisma migrate deploy && npm run start"]
+CMD ["bash", "-lc", "mkdir -p /data && cd /app/web && npx prisma migrate deploy && npm run start"]
