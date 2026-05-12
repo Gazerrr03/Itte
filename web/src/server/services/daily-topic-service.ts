@@ -1,7 +1,8 @@
-import { DailyRunType } from "@prisma/client";
+import { DailyRunType, type Prisma } from "@prisma/client";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { stripHtmlToText } from "@/lib/html-text";
 import { db } from "@/server/db";
 import { getUserPersona, refreshUserPersona, type PersonaSnapshot } from "@/server/services/persona-service";
 
@@ -13,7 +14,7 @@ type TopicCandidate = {
   publishedAt?: Date;
   score?: number;
   fallback?: boolean;
-  meta?: Record<string, unknown>;
+  meta?: Prisma.InputJsonObject;
 };
 
 type ProviderResult = {
@@ -65,7 +66,7 @@ function toIsoDay(date: Date) {
 }
 
 function normalizeText(text: string) {
-  return text.replace(/\s+/g, " ").trim();
+  return stripHtmlToText(text).replace(/\s+/g, " ").trim();
 }
 
 function uniqueByTitle(items: TopicCandidate[]) {

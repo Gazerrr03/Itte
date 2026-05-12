@@ -71,7 +71,9 @@ export const db = new Proxy({} as PrismaClient, {
     if (prop === "then") return undefined; // avoid thenable confusion
 
     // Return a Proxy that lazily resolves the real client on method invocation.
-    return new Proxy({} as object, {
+    // target must be callable so the `apply` trap fires for db.$transaction() etc.
+    const target = (() => {}) as object;
+    return new Proxy(target, {
       get(_nested, method: string) {
         return (...args: unknown[]) =>
           getDb().then((client) => {
