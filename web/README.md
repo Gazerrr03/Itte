@@ -1,35 +1,30 @@
 # Itte Web
 
-Next.js + Tailwind web interface for Itte, with a local Bash session bridge.
+Next.js + Tailwind web interface for Itte. See the [root README](../README.md) for full project context.
 
 ## Start (development)
 
 ```bash
-cd /Users/qizhi_dong/Projects/Itte/web
 npm install
 cp .env.example .env
+# Fill in ITTE_API_BASE, ITTE_API_KEY, ITTE_MODEL in .env
+
+# First time only — initialize database
 touch prisma/dev.db
 npm run prisma:migrate -- --name init
+
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## How Bash bridge works
-
-- API route spawns the repo-root `itte` script as a child process.
-- Sessions are managed by a resident process pool (`LRU=3`).
-- Evicted sessions are reconstructed from stored user inputs before continuing.
-- Allowed commands in web mode: normal chat + `/optimize` `/help` `/daily` `/vibe`.
-- Arbitrary shell commands are not exposed.
-
 ## Required env
-
-`itte` itself reads `/Users/qizhi_dong/Projects/Itte/.env` on startup. Ensure:
 
 - `ITTE_API_BASE`
 - `ITTE_API_KEY`
 - `ITTE_MODEL`
+
+The web server connects directly to the OpenAI-compatible API — no external process dependency.
 
 ## Useful scripts
 
