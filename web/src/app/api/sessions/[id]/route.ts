@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { sessionProcessManager } from "@/server/session-process-manager";
 import { deleteSession, getSession, renameSession } from "@/server/services/session-service";
 
 export async function GET(_: Request, context: { params: Promise<{ id: string }> }) {
@@ -35,7 +34,6 @@ export async function DELETE(_: Request, context: { params: Promise<{ id: string
   const { id } = await context.params;
 
   try {
-    sessionProcessManager.disposeSession(id);
     await deleteSession(id);
     return NextResponse.json({ ok: true });
   } catch {

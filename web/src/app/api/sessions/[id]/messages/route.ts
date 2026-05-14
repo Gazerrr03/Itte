@@ -1,22 +1,27 @@
 import { NextResponse } from "next/server";
-import { DailyRunType } from "@prisma/client";
+import { DailyRunType, MessageRole } from "@prisma/client";
 
 import { db } from "@/server/db";
-import { sessionProcessManager } from "@/server/session-process-manager";
+import { reloadApiConfig, generateResponse, type GenerateMode, type DbMessage } from "@/server/ai-client";
 import { buildDailyRequestKey, generateDailyTopic, refreshPersonaBeforeDaily } from "@/server/services/daily-topic-service";
-import {
-  appendConversation,
-  getReplayInputs,
-  normalizeIncomingInput,
-} from "@/server/services/session-service";
+import { appendConversation, normalizeIncomingInput } from "@/server/services/session-service";
 import { getWebSetting } from "@/server/services/settings-service";
-
-export const runtime = "nodejs";
 
 type RequestBody = {
   input?: string;
   display?: string;
 };
+
+type ChatMessage = { role: "user" | "assistant" | "system"; content: string };
+
+function buildHistory(messages: DbMessage[]): ChatMessage[] {
+  return messages
+    .filter((m) => m.role !== MessageRole.SYSTEM)
+    .map((m) => ({
+      role: (m.role === MessageRole.ASSISTANT ? "assistant" : "user") as "user" | "assistant",
+      content: m.role === MessageRole.USER ? (m.rawInput ?? m.content) : m.content,
+    }));
+}
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id: sessionId } = await context.params;
@@ -45,6 +50,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: "input is required." }, { status: 400 });
   }
 
+  reloadApiConfig();
+
   let normalized: ReturnType<typeof normalizeIncomingInput>;
   try {
     normalized = normalizeIncomingInput(payload.input);
@@ -54,22 +61,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   const displayContent = (typeof payload.display === "string" && payload.display.trim()) || normalized.displayContent;
-
-  const setting = normalized.command === "/daily" ? null : await getWebSetting();
-  const replayInputs =
-    normalized.command === "/daily" ? [] : sessionProcessManager.hasSession(sessionId) ? [] : await getReplayInputs(sessionId);
-
-  if (normalized.command !== "/daily") {
-    try {
-      await sessionProcessManager.ensureSessionProcess(sessionId, {
-        runtime: setting!,
-        replayInputs,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to boot session process.";
-      return NextResponse.json({ error: message }, { status: 500 });
-    }
-  }
 
   const encoder = new TextEncoder();
 
@@ -105,38 +96,42 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           return;
         }
 
-        const runOnce = () =>
-          sessionProcessManager.sendLine(sessionId, normalized.rawInput, {
-            timeoutMs: 45000,
-            onChunk: (chunk) => {
-              if (!chunk) {
-                return;
-              }
-              assistantOutput += chunk;
-              controller.enqueue(encoder.encode(chunk));
-            },
-          });
+        // Query conversation history from DB for AI context.
+        const priorMessages = await db.message.findMany({
+          where: { sessionId },
+          orderBy: { createdAt: "asc" },
+          select: { role: true, content: true, rawInput: true },
+        });
 
-        let finalOutput: string;
-        try {
-          finalOutput = await runOnce();
-        } catch (error) {
-          // Retry once when no data has reached UI yet to avoid duplicated streamed chunks.
-          if (assistantOutput.length > 0) {
-            throw error;
-          }
+        const history = buildHistory(priorMessages);
 
-          sessionProcessManager.disposeSession(sessionId);
-          await sessionProcessManager.ensureSessionProcess(sessionId, {
-            runtime: setting!,
-            replayInputs: await getReplayInputs(sessionId),
-          });
-          finalOutput = await runOnce();
+        let mode: GenerateMode = "normal";
+        let modeArg: string | undefined;
+
+        if (normalized.command === "/optimize") {
+          mode = "optimize";
+          modeArg = normalized.rawInput;
+        } else if (normalized.command === "/help") {
+          mode = "help";
+          modeArg = normalized.rawInput;
+        } else if (normalized.command === "/vibe") {
+          mode = "vibe";
+          modeArg = normalized.rawInput;
         }
 
-        if (!assistantOutput) {
-          assistantOutput = finalOutput;
-          controller.enqueue(encoder.encode(finalOutput));
+        const result = await generateResponse({
+          mode,
+          modeArg,
+          history,
+          onChunk: (chunk) => {
+            assistantOutput += chunk;
+            controller.enqueue(encoder.encode(chunk));
+          },
+        });
+
+        if (!assistantOutput && result.content) {
+          assistantOutput = result.content;
+          controller.enqueue(encoder.encode(result.content));
         }
 
         await appendConversation({
@@ -149,7 +144,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
         controller.close();
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown process error.";
+        const message = error instanceof Error ? error.message : "Unknown error.";
         controller.enqueue(encoder.encode(`\n[Error] ${message}`));
         controller.close();
       }
